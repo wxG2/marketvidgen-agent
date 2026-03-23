@@ -1,5 +1,7 @@
 # VidGen
 
+[中文说明](./README.zh-CN.md)
+
 VidGen is an AI-assisted short-video production workspace with two workflows:
 
 - `一键生成` for chat-style video generation from script + images
