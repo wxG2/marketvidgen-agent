@@ -14,6 +14,11 @@ class PipelineCreateRequest(BaseModel):
     no_audio: bool = True  # True = Seedance generates silent video; False = Seedance generates video with audio
     style: str = "commercial"  # commercial | lifestyle | cinematic
     voice_id: str = "default"
+    transition: str = "none"  # "none" | "fade" | "dissolve" | "slideright" | "slideup"
+    transition_duration: float = 0.5  # seconds
+    bgm_mood: str = "none"  # "none" | "upbeat" | "calm" | "cinematic" | "energetic"
+    bgm_volume: float = 0.15  # 0.0 ~ 1.0, relative to narration
+    watermark_image_id: Optional[str] = None  # material ID of watermark/logo image
 
 
 class ScriptGenerateRequest(BaseModel):
@@ -37,6 +42,7 @@ class PrefightCheckResponse(BaseModel):
     estimated_audio_seconds: float = 0
     max_video_seconds: int = 0
     recommended_image_count: int = 0
+    estimated_tokens: int = 0  # rough total token estimate for the pipeline
 
 
 class PipelineRunResponse(BaseModel):

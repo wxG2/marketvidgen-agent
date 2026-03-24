@@ -80,6 +80,9 @@ class OrchestratorAgent(BaseAgent):
         self.llm = llm_service
 
     async def execute(self, context: AgentContext, input_data: dict) -> AgentResult:
+        if await context.is_cancelled():
+            return AgentResult(success=False, output_data={}, error="Pipeline cancelled")
+
         script: str = input_data["script"]
         image_ids: list[str] = input_data["image_ids"]
         platform: str = input_data.get("platform", "generic")
@@ -218,6 +221,8 @@ class OrchestratorAgent(BaseAgent):
                 schema=schema,
                 image_paths=image_paths,
             )
+            if await context.is_cancelled():
+                return AgentResult(success=False, output_data={}, error="Pipeline cancelled")
             planned_shots = llm_output.get("shots", [])
             if len(planned_shots) != num_shots:
                 raise ValueError("Model returned unexpected shot count")

@@ -6,10 +6,10 @@ import uuid
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.models.pipeline import AgentExecution, PipelineRun
@@ -27,6 +27,15 @@ class AgentContext:
     usage_recorder: UsageRecorder
     artifacts: dict[str, Any] = field(default_factory=dict)
     cancelled: bool = False
+
+    async def is_cancelled(self) -> bool:
+        if self.cancelled:
+            return True
+
+        async with self.db_session_factory() as session:
+            run = await session.get(PipelineRun, self.pipeline_run_id)
+            self.cancelled = bool(run and run.status == "cancelled")
+        return self.cancelled
 
 
 @dataclass
@@ -50,20 +59,25 @@ class BaseAgent(ABC):
     async def execute(self, context: AgentContext, input_data: dict) -> AgentResult:
         ...
 
-    async def run(self, context: AgentContext, input_data: dict, attempt: int = 1) -> AgentResult:
+    async def run(self, context: AgentContext, input_data: dict, attempt: int | None = None) -> AgentResult:
         """Template method: update pipeline status, record start, execute, record end."""
-        if context.cancelled:
+        if await context.is_cancelled():
             return AgentResult(success=False, output_data={}, error="Pipeline cancelled")
 
         # Update PipelineRun.current_agent
-        await self._update_pipeline_status(context, "running")
+        if not await self._update_pipeline_status(context, "running"):
+            return AgentResult(success=False, output_data={}, error="Pipeline cancelled")
 
         # Create AgentExecution record
+        if attempt is None:
+            attempt = await self._next_attempt_number(context)
         exec_id = await self._record_start(context, input_data, attempt)
 
         start_time = time.monotonic()
         try:
             result = await self.execute(context, input_data)
+            if await context.is_cancelled():
+                result = AgentResult(success=False, output_data={}, error="Pipeline cancelled")
             duration_ms = int((time.monotonic() - start_time) * 1000)
             await self._record_complete(context, exec_id, result, duration_ms)
             for record in result.usage_records:
@@ -88,14 +102,29 @@ class BaseAgent(ABC):
             logger.error(f"[{context.trace_id}] Agent '{self.name}' failed: {e}")
             return error_result
 
-    async def _update_pipeline_status(self, context: AgentContext, status: str):
+    async def _update_pipeline_status(self, context: AgentContext, status: str) -> bool:
         async with context.db_session_factory() as session:
             run = await session.get(PipelineRun, context.pipeline_run_id)
             if run:
+                if run.status == "cancelled":
+                    context.cancelled = True
+                    return False
                 run.current_agent = self.name
                 run.status = status
-                run.updated_at = datetime.utcnow()
+                run.updated_at = datetime.now(timezone.utc)
                 await session.commit()
+        return True
+
+    async def _next_attempt_number(self, context: AgentContext) -> int:
+        async with context.db_session_factory() as session:
+            result = await session.execute(
+                select(func.max(AgentExecution.attempt_number)).where(
+                    AgentExecution.pipeline_run_id == context.pipeline_run_id,
+                    AgentExecution.agent_name == self.name,
+                )
+            )
+            max_attempt = result.scalar_one_or_none() or 0
+        return int(max_attempt) + 1
 
     async def _record_start(self, context: AgentContext, input_data: dict, attempt: int) -> str:
         exec_id = str(uuid.uuid4())
@@ -121,5 +150,5 @@ class BaseAgent(ABC):
                 execution.output_data = json.dumps(result.output_data, ensure_ascii=False, default=str)
                 execution.error_message = result.error
                 execution.duration_ms = duration_ms
-                execution.completed_at = datetime.utcnow()
+                execution.completed_at = datetime.now(timezone.utc)
                 await session.commit()

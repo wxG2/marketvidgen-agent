@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -62,7 +62,7 @@ class PipelineExecutor:
                 pipeline_run_id,
                 status="completed",
                 final_video_path=final_video,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
             )
             return result
 
@@ -117,6 +117,11 @@ class PipelineExecutor:
             "shot_prompts": prompt_result.output_data["shot_prompts"],
             "duration_mode": input_config.get("duration_mode", "fixed"),
             "shot_durations": [s["duration_seconds"] for s in context.artifacts["orchestrator_plan"]["shots"]],
+            "transition": input_config.get("transition", "none"),
+            "transition_duration": input_config.get("transition_duration", 0.5),
+            "bgm_mood": input_config.get("bgm_mood", "none"),
+            "bgm_volume": input_config.get("bgm_volume", 0.15),
+            "watermark_path": input_config.get("watermark_path"),
         }
         editor_result = await self.video_editor.run(context, editor_input)
         if not editor_result.success:
@@ -127,10 +132,12 @@ class PipelineExecutor:
 
     async def _update_run(self, pipeline_run_id: str, **kwargs):
         """Update PipelineRun fields."""
-        kwargs["updated_at"] = datetime.utcnow()
+        kwargs["updated_at"] = datetime.now(timezone.utc)
         async with self.db_session_factory() as session:
             run = await session.get(PipelineRun, pipeline_run_id)
             if run:
+                if run.status == "cancelled" and kwargs.get("status") != "cancelled":
+                    return
                 for key, value in kwargs.items():
                     setattr(run, key, value)
                 await session.commit()

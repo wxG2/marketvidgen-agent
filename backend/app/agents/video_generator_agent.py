@@ -19,6 +19,9 @@ class VideoGeneratorAgent(BaseAgent):
         self.generator = video_generator
 
     async def execute(self, context: AgentContext, input_data: dict) -> AgentResult:
+        if await context.is_cancelled():
+            return AgentResult(success=False, output_data={}, error="Pipeline cancelled")
+
         shot_prompts: list[dict] = input_data["shot_prompts"]
         self._no_audio = input_data.get("no_audio", settings.SEEDANCE_NO_AUDIO)
         # Optional: specific shot indices to regenerate (for L1 rollback)
@@ -36,7 +39,7 @@ class VideoGeneratorAgent(BaseAgent):
 
         # Generate all shots in parallel
         tasks = [
-            self._generate_single(shot)
+            self._generate_single(context, shot)
             for shot in shots_to_process
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -62,6 +65,9 @@ class VideoGeneratorAgent(BaseAgent):
             elif idx in existing_by_idx:
                 video_clips.append(existing_by_idx[idx])
 
+        if await context.is_cancelled():
+            return AgentResult(success=False, output_data={}, error="Pipeline cancelled")
+
         if errors and not video_clips:
             return AgentResult(success=False, output_data={}, error="; ".join(errors))
 
@@ -70,8 +76,11 @@ class VideoGeneratorAgent(BaseAgent):
         }
         return AgentResult(success=True, output_data=output)
 
-    async def _generate_single(self, shot: dict) -> dict:
+    async def _generate_single(self, context: AgentContext, shot: dict) -> dict:
         """Generate a single video clip and poll until complete."""
+        if await context.is_cancelled():
+            raise RuntimeError("Pipeline cancelled")
+
         raw_duration = int(shot.get("duration_seconds", 5))
         # Clamp to nearest model-supported duration
         supported = settings.SEEDANCE_SUPPORTED_DURATIONS
@@ -88,6 +97,8 @@ class VideoGeneratorAgent(BaseAgent):
         # Poll until done — Kling v3 can take 3-5 min
         max_polls = 120  # 10 minutes max at 5s intervals
         for poll_num in range(max_polls):
+            if await context.is_cancelled():
+                raise RuntimeError("Pipeline cancelled")
             status = await self.generator.poll_status(task.task_id)
             if poll_num % 6 == 0:  # log every 30s
                 logger.info(f"Shot {shot['shot_idx']}: poll #{poll_num} status={status.status} video_url={status.video_url}")

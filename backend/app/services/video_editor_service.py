@@ -79,6 +79,11 @@ class RealVideoEditorService(VideoEditorService):
         shot_prompts = context_data.get("shot_prompts", [])
         duration_mode = context_data.get("duration_mode", "fixed")
         shot_durations = context_data.get("shot_durations", [])
+        transition_type = context_data.get("transition", "none")
+        transition_dur = float(context_data.get("transition_duration", 0.5))
+        bgm_mood = context_data.get("bgm_mood", "none")
+        bgm_volume = float(context_data.get("bgm_volume", 0.15))
+        watermark_path = context_data.get("watermark_path")
         target_duration_s = (
             sum(float(d) for d in shot_durations)
             if duration_mode == "fixed" and shot_durations
@@ -148,29 +153,39 @@ class RealVideoEditorService(VideoEditorService):
                     raise RuntimeError(f"ffmpeg clip process failed: {stderr}")
                 processed_paths.append(clip_out)
 
-            concat_file = os.path.join(temp_dir, "concat.txt")
-            Path(concat_file).write_text(
-                "\n".join(f"file '{Path(p).as_posix()}'" for p in processed_paths),
-                encoding="utf-8",
-            )
             merged_path = os.path.join(temp_dir, "merged.mp4")
-            return_code, _, stderr = await run_subprocess(
-                self.ffmpeg_bin,
-                "-y",
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
-                concat_file,
-                "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
-                merged_path,
-            )
-            if return_code != 0:
-                raise RuntimeError(f"ffmpeg concat failed: {stderr}")
+
+            if transition_type != "none" and len(processed_paths) >= 2:
+                # ── xfade transitions between clips ──
+                xfade_name = _XFADE_MAP.get(transition_type, "fade")
+                merged_path = await _concat_with_xfade(
+                    self.ffmpeg_bin, processed_paths, merged_path,
+                    xfade_name, transition_dur, run_subprocess,
+                )
+            else:
+                # ── Simple concat (no transitions) ──
+                concat_file = os.path.join(temp_dir, "concat.txt")
+                Path(concat_file).write_text(
+                    "\n".join(f"file '{Path(p).as_posix()}'" for p in processed_paths),
+                    encoding="utf-8",
+                )
+                return_code, _, stderr = await run_subprocess(
+                    self.ffmpeg_bin,
+                    "-y",
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    concat_file,
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    merged_path,
+                )
+                if return_code != 0:
+                    raise RuntimeError(f"ffmpeg concat failed: {stderr}")
 
             # ── Probe merged video duration ──
             import logging as _logging
@@ -218,6 +233,30 @@ class RealVideoEditorService(VideoEditorService):
                             _log.info(f"Audio trimmed to {effective_dur_s}s with fade-out")
                         else:
                             _log.warning(f"Audio trim failed: {err}")
+
+            # ── Mix background music if requested ──
+            if bgm_mood != "none" and actual_audio_path and os.path.exists(actual_audio_path):
+                bgm_path = _find_bgm(bgm_mood)
+                if bgm_path:
+                    mixed_audio = os.path.join(temp_dir, "audio_with_bgm.mp3")
+                    bgm_dur = effective_dur_s or video_dur_s or 30
+                    rc, _, err = await run_subprocess(
+                        self.ffmpeg_bin, "-y",
+                        "-i", actual_audio_path,
+                        "-stream_loop", "-1", "-i", bgm_path,
+                        "-filter_complex",
+                        f"[1:a]volume={bgm_volume:.2f},afade=t=in:d=1.5,afade=t=out:st={max(bgm_dur - 2, 0):.1f}:d=2[bgm];"
+                        f"[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[out]",
+                        "-map", "[out]",
+                        "-t", f"{bgm_dur:.3f}",
+                        "-c:a", "libmp3lame", "-q:a", "2",
+                        mixed_audio,
+                    )
+                    if rc == 0:
+                        actual_audio_path = mixed_audio
+                        _log.info(f"Mixed BGM ({bgm_mood}) at volume {bgm_volume}")
+                    else:
+                        _log.warning(f"BGM mixing failed, continuing without: {err}")
 
             # Scale subtitle timings if audio was sped up
             timed_segments = _parse_srt_timed(subtitle_path)
@@ -279,6 +318,31 @@ class RealVideoEditorService(VideoEditorService):
             return_code, _, stderr = await run_subprocess(*mux_args)
             if return_code != 0:
                 raise RuntimeError(f"ffmpeg mux failed: {stderr}")
+
+            # ── Watermark overlay (if provided) ──
+            if watermark_path and os.path.exists(watermark_path):
+                watermarked_path = os.path.join(temp_dir, "watermarked.mp4")
+                # Overlay watermark in top-right corner with padding and 70% opacity
+                wm_filter = (
+                    "[1:v]format=rgba,colorchannelmixer=aa=0.7[wm];"
+                    "[0:v][wm]overlay=W-w-20:20[vout]"
+                )
+                wm_rc, _, wm_err = await run_subprocess(
+                    self.ffmpeg_bin, "-y",
+                    "-i", output_path,
+                    "-i", watermark_path,
+                    "-filter_complex", wm_filter,
+                    "-map", "[vout]",
+                    "-map", "0:a?",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-c:a", "copy",
+                    watermarked_path,
+                )
+                if wm_rc == 0:
+                    os.replace(watermarked_path, output_path)
+                    _log.info(f"Watermark applied from {watermark_path}")
+                else:
+                    _log.warning(f"Watermark overlay failed, continuing without: {wm_err}")
 
             # ── Probe ACTUAL output duration (authoritative) ──
             actual_output_dur = await _probe_duration(self.ffmpeg_bin, output_path, run_subprocess)
@@ -449,3 +513,115 @@ def _render_subtitle_overlays(
 
     filter_complex = ";".join(parts)
     return png_paths, filter_complex
+
+
+# ── Transition xfade mapping ──
+_XFADE_MAP: dict[str, str] = {
+    "fade": "fade",
+    "dissolve": "dissolve",
+    "slideright": "slideright",
+    "slideup": "slideup",
+    "wipeleft": "wipeleft",
+    "wiperight": "wiperight",
+}
+
+
+async def _concat_with_xfade(
+    ffmpeg_bin: str,
+    clip_paths: list[str],
+    output_path: str,
+    xfade_name: str,
+    xfade_dur: float,
+    run_subprocess,
+) -> str:
+    """Concatenate clips with xfade transitions between each pair.
+
+    FFmpeg xfade filter: [v0][v1]xfade=transition=fade:duration=0.5:offset=4.5[vx0]
+    where offset = duration_of_clip0 - xfade_dur
+    """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    if len(clip_paths) == 1:
+        # Single clip, just copy
+        import shutil
+        shutil.copy2(clip_paths[0], output_path)
+        return output_path
+
+    # Probe each clip's duration
+    durations: list[float] = []
+    for cp in clip_paths:
+        dur = await _probe_duration(ffmpeg_bin, cp, run_subprocess)
+        durations.append(dur or 5.0)
+
+    # Build input args and filter_complex
+    input_args: list[str] = []
+    for cp in clip_paths:
+        input_args.extend(["-i", cp])
+
+    # Chain xfade filters
+    filter_parts: list[str] = []
+    offset = durations[0] - xfade_dur
+    prev_label = "[0:v]"
+    for i in range(1, len(clip_paths)):
+        out_label = f"[vx{i}]" if i < len(clip_paths) - 1 else "[vout]"
+        offset_clamped = max(offset, 0.1)
+        filter_parts.append(
+            f"{prev_label}[{i}:v]xfade=transition={xfade_name}:duration={xfade_dur:.2f}:offset={offset_clamped:.3f}{out_label}"
+        )
+        prev_label = out_label
+        if i < len(clip_paths) - 1:
+            offset = offset_clamped + durations[i] - xfade_dur
+
+    filter_complex = ";".join(filter_parts)
+
+    args = [ffmpeg_bin, "-y"] + input_args + [
+        "-filter_complex", filter_complex,
+        "-map", "[vout]",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        output_path,
+    ]
+    rc, _, stderr = await run_subprocess(*args)
+    if rc != 0:
+        _log.warning(f"xfade concat failed, falling back to simple concat: {stderr}")
+        # Fallback: simple concat
+        import tempfile
+        concat_file = os.path.join(tempfile.mkdtemp(), "concat.txt")
+        Path(concat_file).write_text(
+            "\n".join(f"file '{Path(p).as_posix()}'" for p in clip_paths),
+            encoding="utf-8",
+        )
+        rc2, _, stderr2 = await run_subprocess(
+            ffmpeg_bin, "-y", "-f", "concat", "-safe", "0",
+            "-i", concat_file, "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            output_path,
+        )
+        if rc2 != 0:
+            raise RuntimeError(f"ffmpeg concat fallback failed: {stderr2}")
+    return output_path
+
+
+def _find_bgm(mood: str) -> str | None:
+    """Find a BGM audio file for the given mood from the BGM directory."""
+    from app.config import settings
+    import random
+
+    bgm_dir = Path(settings.BGM_DIR)
+    if not bgm_dir.exists():
+        return None
+
+    # Look for files in mood subdirectory or root with mood prefix
+    mood_dir = bgm_dir / mood
+    candidates: list[Path] = []
+    if mood_dir.is_dir():
+        candidates = list(mood_dir.glob("*.mp3")) + list(mood_dir.glob("*.wav"))
+    if not candidates:
+        candidates = list(bgm_dir.glob(f"{mood}*.mp3")) + list(bgm_dir.glob(f"{mood}*.wav"))
+    if not candidates:
+        # Fall back to any BGM file
+        candidates = list(bgm_dir.glob("*.mp3")) + list(bgm_dir.glob("*.wav"))
+
+    if candidates:
+        return str(random.choice(candidates))
+    return None

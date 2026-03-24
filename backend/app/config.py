@@ -4,12 +4,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    PIPELINE_ENGINE: str = "langgraph"
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/vidgen.db"
     UPLOAD_DIR: str = "./data/uploads"
     MATERIALS_ROOT: str = "../materials"
     EXAMPLES_ROOT: str = "../examples"
     THUMBNAILS_DIR: str = "./data/thumbnails"
     GENERATED_DIR: str = "./data/generated"
+    BGM_DIR: str = "../bgm"  # royalty-free background music by mood
+    WATERMARKS_DIR: str = "./data/watermarks"  # per-project watermark images
 
     QWEN_API_KEY: str = ""
     QWEN_API_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -55,15 +58,12 @@ class Settings(BaseSettings):
     USE_MOCK_LIPSYNC: bool = True
     USE_MOCK_TTS: bool = True
     USE_MOCK_VIDEO_EDITOR: bool = True
-    USE_MOCK_QUALITY_ASSESSOR: bool = True
 
     TTS_API_KEY: str = ""
     TTS_API_URL: str = ""
-    QUALITY_ASSESSOR_API_KEY: str = ""
-    QUALITY_ASSESSOR_API_URL: str = ""
     FFMPEG_BIN: str = "ffmpeg"
 
-    model_config = SettingsConfigDict(env_file="../.env")
+    model_config = SettingsConfigDict(env_file="../.env", extra="ignore")
 
 
 settings = Settings()

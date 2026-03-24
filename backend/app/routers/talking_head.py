@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
@@ -335,7 +335,7 @@ async def _poll_lipsync(task_id: str, project_id: str, lipsync: LipSyncGenerator
                 status = await lipsync.poll_status(task.lipsync_task_id)
                 if status.status == "completed":
                     task.lipsync_status = "completed"
-                    task.completed_at = datetime.utcnow()
+                    task.completed_at = datetime.now(timezone.utc)
                     task.duration_seconds = 5.0  # mock duration
 
                     # Create a GeneratedVideo record so it appears in timeline
@@ -349,7 +349,7 @@ async def _poll_lipsync(task_id: str, project_id: str, lipsync: LipSyncGenerator
                         duration_seconds=task.duration_seconds,
                         generation_type="talking_head",
                         talking_head_task_id=task.id,
-                        completed_at=datetime.utcnow(),
+                        completed_at=datetime.now(timezone.utc),
                     )
                     db.add(gen_video)
                 elif status.status == "failed":

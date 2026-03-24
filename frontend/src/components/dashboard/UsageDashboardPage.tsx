@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import { deleteProject, getProjectHistory, getProjectUsage, listProjects } from '../../api/projects'
 import type { Project, ProjectArtifactFile, ProjectHistoryRun, ProjectUsageSummary } from '../../types'
+import { useToast } from '../ui/Toast'
 import { ArrowLeft, BarChart3, ChevronDown, ChevronRight, Clapperboard, Cpu, FileAudio2, FileText, Gauge, FolderKanban, MessageSquareQuote, PlayCircle, Trash2 } from 'lucide-react'
 
 const STATUS_LABELS: Record<string, string> = {
@@ -34,12 +35,13 @@ export default function UsageDashboardPage({
   const [expandedRunIds, setExpandedRunIds] = useState<Record<string, boolean>>({})
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const { toast } = useToast()
 
   useEffect(() => {
     listProjects().then((items) => {
       setProjects(items)
       if (!selectedProjectId && items[0]) setSelectedProjectId(items[0].id)
-    }).catch(() => {})
+    }).catch(() => toast('error', '加载项目列表失败'))
   }, [])
 
   useEffect(() => {

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -182,7 +182,7 @@ async def _poll_generations(project_id: str, generator: VideoGenerator):
                     status = await generator.poll_status(video.kling_task_id)
                     if status.status == "completed":
                         video.status = "completed"
-                        video.completed_at = datetime.utcnow()
+                        video.completed_at = datetime.now(timezone.utc)
                         video.duration_seconds = 5.0  # mock duration
                     elif status.status == "failed":
                         video.status = "failed"

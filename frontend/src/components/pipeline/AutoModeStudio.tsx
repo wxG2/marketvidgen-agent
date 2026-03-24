@@ -18,6 +18,7 @@ import {
   launchPipeline,
   preflightCheck,
   retryFailedAgent,
+  streamPipeline,
 } from '../../api/pipeline'
 import type { PreflightCheckResult } from '../../api/pipeline'
 import type {
@@ -27,6 +28,8 @@ import type {
   MaterialSelection,
 } from '../../types'
 import { cn } from '../../lib/utils'
+import { useToast } from '../ui/Toast'
+import { SkeletonCard } from '../ui/Skeleton'
 import {
   AlertTriangle, Check, ChevronDown, ChevronUp, ClipboardCopy, Download,
   FolderUp, ImagePlus, Loader2, MessageSquareText, Play, RotateCcw, Send,
@@ -74,6 +77,7 @@ export default function AutoModeStudio({ projectId, onSwitchToManual }: Props) {
     usageSummary,
     setUsageSummary,
   } = usePipelineStore()
+  const { toast } = useToast()
 
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -91,14 +95,19 @@ export default function AutoModeStudio({ projectId, onSwitchToManual }: Props) {
   const [script, setScript] = useState('')
   const [videoPlatform, setVideoPlatform] = useState('generic')
   const [videoNoAudio, setVideoNoAudio] = useState(true)
+  const [durationMode, setDurationMode] = useState<'auto' | 'fixed'>('fixed')
+  const [videoTransition, setVideoTransition] = useState('none')
+  const [bgmMood, setBgmMood] = useState('none')
+  const [watermarkId, setWatermarkId] = useState<string | null>(null)
   const [preflightWarning, setPreflightWarning] = useState<PreflightCheckResult | null>(null)
   const [launching, setLaunching] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [loadingMaterials, setLoadingMaterials] = useState(false)
   const [generatingScript, setGeneratingScript] = useState(false)
   const folderInputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const chatUploadRef = useRef<HTMLInputElement>(null)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const sseRef = useRef<EventSource | null>(null)
 
   const refreshCategories = useCallback(async () => {
     const cats = await getCategories()
@@ -114,54 +123,79 @@ export default function AutoModeStudio({ projectId, onSwitchToManual }: Props) {
 
   const refreshMaterials = useCallback(async (category: string) => {
     if (!category) return
-    const result = await getMaterials(category, 1, 100)
-    setMaterials(result.items)
+    setLoadingMaterials(true)
+    try {
+      const result = await getMaterials(category, 1, 100)
+      setMaterials(result.items)
+    } finally {
+      setLoadingMaterials(false)
+    }
   }, [])
 
   useEffect(() => {
-    refreshCategories().catch(() => {})
+    refreshCategories().catch(() => toast('error', '加载素材分类失败'))
     refreshSelections().catch(() => {})
   }, [refreshCategories, refreshSelections])
 
   useEffect(() => {
     if (!activeCategory) return
-    refreshMaterials(activeCategory).catch(() => {})
+    refreshMaterials(activeCategory).catch(() => toast('warning', '加载素材列表失败'))
   }, [activeCategory, refreshMaterials])
 
   useEffect(() => {
     if (!currentRun) return
 
-    const poll = async () => {
+    // Close any previous SSE connection
+    if (sseRef.current) {
+      sseRef.current.close()
+      sseRef.current = null
+    }
+
+    const es = streamPipeline(projectId, currentRun.id)
+    sseRef.current = es
+
+    const handleUpdate = (e: MessageEvent) => {
       try {
-        const run = await getPipelineRun(projectId, currentRun.id)
-        setCurrentRun(run)
-
-        const executions = await getPipelineAgents(projectId, currentRun.id)
-        setAgentExecutions(executions)
-
-        try {
-          const usage = await getPipelineUsage(projectId, currentRun.id)
-          setUsageSummary(usage)
-        } catch {}
-
-        if (run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled') {
-          if (run.status === 'completed') {
-            // Clear selections only on success — keep them on failure so user can retry
-            setSelections([])
-            setSelectedIds(new Set())
-          }
-          if (pollRef.current) {
-            clearInterval(pollRef.current)
-            pollRef.current = null
-          }
-        }
+        const data = JSON.parse(e.data) as { run: typeof currentRun; agents: AgentExecution[] }
+        setCurrentRun(data.run)
+        setAgentExecutions(data.agents)
       } catch {}
     }
 
-    poll()
-    pollRef.current = setInterval(poll, 2500)
+    const handleDone = (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as { run: typeof currentRun; agents: AgentExecution[] }
+        setCurrentRun(data.run)
+        setAgentExecutions(data.agents)
+        if (data.run.status === 'completed') {
+          setSelections([])
+          setSelectedIds(new Set())
+        }
+      } catch {}
+      es.close()
+      sseRef.current = null
+      // Fetch final usage summary
+      getPipelineUsage(projectId, currentRun.id).then(setUsageSummary).catch(() => {})
+    }
+
+    const handleError = () => {
+      // SSE connection lost — fall back to a single poll then close
+      es.close()
+      sseRef.current = null
+      getPipelineRun(projectId, currentRun.id).then(setCurrentRun).catch(() => {})
+      getPipelineAgents(projectId, currentRun.id).then(setAgentExecutions).catch(() => {})
+    }
+
+    es.addEventListener('update', handleUpdate)
+    es.addEventListener('done', handleDone)
+    es.addEventListener('error', handleError)
+
     return () => {
-      if (pollRef.current) clearInterval(pollRef.current)
+      es.removeEventListener('update', handleUpdate)
+      es.removeEventListener('done', handleDone)
+      es.removeEventListener('error', handleError)
+      es.close()
+      sseRef.current = null
     }
   }, [currentRun?.id, projectId])
 
@@ -294,7 +328,7 @@ export default function AutoModeStudio({ projectId, onSwitchToManual }: Props) {
         script: trimmed,
         image_count: imageIds.length,
         duration_seconds: autoDuration,
-        duration_mode: 'fixed',
+        duration_mode: durationMode,
       })
       if (!check.ok) {
         setPreflightWarning(check)
@@ -328,10 +362,15 @@ export default function AutoModeStudio({ projectId, onSwitchToManual }: Props) {
         image_ids: imageIds,
         platform: videoPlatform,
         duration_seconds: autoDuration,
-        duration_mode: 'fixed',
+        duration_mode: durationMode,
         no_audio: videoNoAudio,
         style: 'commercial',
         voice_id: 'Chelsie',
+        transition: videoTransition,
+        transition_duration: 0.5,
+        bgm_mood: bgmMood,
+        bgm_volume: 0.15,
+        watermark_image_id: watermarkId,
       })
       setCurrentRun(run)
       setScript('')
@@ -441,6 +480,12 @@ export default function AutoModeStudio({ projectId, onSwitchToManual }: Props) {
           {uploading ? (
             <div className="h-full flex items-center justify-center text-slate-500">
               <Loader2 size={20} className="animate-spin mr-2" /> 正在处理素材...
+            </div>
+          ) : loadingMaterials ? (
+            <div className="grid grid-cols-2 gap-3">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <SkeletonCard key={i} />
+              ))}
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-3">
@@ -634,12 +679,22 @@ export default function AutoModeStudio({ projectId, onSwitchToManual }: Props) {
                     <option value="bilibili">B站 16:9</option>
                   </select>
                 </div>
-                <div className="flex items-center gap-1.5 text-sm text-slate-500">
+                <div className="flex items-center gap-1.5 text-sm text-slate-600">
                   <span className="text-xs text-slate-400">时长</span>
-                  <span className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-sm text-slate-700">
-                    {selections.length > 0 ? `${selections.length * 5}s` : '—'}
-                  </span>
-                  <span className="text-xs text-slate-400">({selections.length}张×5s)</span>
+                  <select
+                    value={durationMode}
+                    onChange={(e) => setDurationMode(e.target.value as 'auto' | 'fixed')}
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-sm text-slate-700 outline-none"
+                  >
+                    <option value="fixed">固定 ({selections.length > 0 ? `${selections.length * 5}s` : '—'})</option>
+                    <option value="auto">自动</option>
+                  </select>
+                  {durationMode === 'fixed' && selections.length > 0 && (
+                    <span className="text-xs text-slate-400">({selections.length}张×5s)</span>
+                  )}
+                  {durationMode === 'auto' && (
+                    <span className="text-xs text-slate-400">按语音时长</span>
+                  )}
                 </div>
                 <label className="flex items-center gap-1.5 text-sm text-slate-600 cursor-pointer select-none">
                   <input
@@ -651,6 +706,47 @@ export default function AutoModeStudio({ projectId, onSwitchToManual }: Props) {
                   <Volume2 size={14} className={videoNoAudio ? 'text-slate-300' : 'text-violet-500'} />
                   <span className="text-xs text-slate-400">视频原声</span>
                 </label>
+                <div className="flex items-center gap-1.5 text-sm text-slate-600">
+                  <span className="text-xs text-slate-400">转场</span>
+                  <select
+                    value={videoTransition}
+                    onChange={(e) => setVideoTransition(e.target.value)}
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-sm text-slate-700 outline-none"
+                  >
+                    <option value="none">无</option>
+                    <option value="fade">淡入淡出</option>
+                    <option value="dissolve">溶解</option>
+                    <option value="slideright">右滑</option>
+                    <option value="slideup">上推</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-1.5 text-sm text-slate-600">
+                  <span className="text-xs text-slate-400">BGM</span>
+                  <select
+                    value={bgmMood}
+                    onChange={(e) => setBgmMood(e.target.value)}
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-sm text-slate-700 outline-none"
+                  >
+                    <option value="none">无</option>
+                    <option value="upbeat">欢快</option>
+                    <option value="calm">舒缓</option>
+                    <option value="cinematic">电影感</option>
+                    <option value="energetic">动感</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-1.5 text-sm text-slate-600">
+                  <span className="text-xs text-slate-400">水印</span>
+                  <select
+                    value={watermarkId ?? ''}
+                    onChange={(e) => setWatermarkId(e.target.value || null)}
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-sm text-slate-700 outline-none max-w-[120px]"
+                  >
+                    <option value="">无</option>
+                    {materials.filter(m => m.media_type.startsWith('image/')).map((m) => (
+                      <option key={m.id} value={m.id}>{m.filename}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
               <button
                 onClick={handleSend}
@@ -670,6 +766,12 @@ export default function AutoModeStudio({ projectId, onSwitchToManual }: Props) {
                     <span>预估口播 {preflightWarning.estimated_audio_seconds}s</span>
                     <span>·</span>
                     <span>建议素材 {preflightWarning.recommended_image_count} 张</span>
+                    {preflightWarning.estimated_tokens > 0 && (
+                      <>
+                        <span>·</span>
+                        <span>预估消耗 ~{(preflightWarning.estimated_tokens / 1000).toFixed(1)}k tokens</span>
+                      </>
+                    )}
                   </div>
                   <div className="mt-2 flex gap-2">
                     <button
@@ -695,10 +797,15 @@ export default function AutoModeStudio({ projectId, onSwitchToManual }: Props) {
                           image_ids: imageIds,
                           platform: videoPlatform,
                           duration_seconds: imageIds.length * 5,
-                          duration_mode: 'fixed',
+                          duration_mode: durationMode,
                           no_audio: videoNoAudio,
                           style: 'commercial',
                           voice_id: 'Chelsie',
+                          transition: videoTransition,
+                          transition_duration: 0.5,
+                          bgm_mood: bgmMood,
+                          bgm_volume: 0.15,
+                          watermark_image_id: watermarkId,
                         }).then((run) => {
                           setCurrentRun(run)
                           setScript('')

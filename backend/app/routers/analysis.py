@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,7 +32,7 @@ async def _run_analysis(analysis_id: str, video_path: str, analyzer: VideoAnalyz
             analysis.scene_tags = json.dumps(result.scene_tags, ensure_ascii=False)
             analysis.recommended_categories = json.dumps(result.recommended_categories, ensure_ascii=False)
             analysis.raw_response = result.raw_response
-            analysis.completed_at = datetime.utcnow()
+            analysis.completed_at = datetime.now(timezone.utc)
         except Exception as e:
             analysis.status = "failed"
             analysis.error_message = str(e)

@@ -206,6 +206,11 @@ export interface PipelineConfig {
   no_audio?: boolean
   style: string
   voice_id: string
+  transition?: string
+  transition_duration?: number
+  bgm_mood?: string
+  bgm_volume?: number
+  watermark_image_id?: string | null
 }
 
 export interface GenerateScriptResponse {

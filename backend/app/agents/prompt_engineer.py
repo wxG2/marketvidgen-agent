@@ -14,6 +14,9 @@ class PromptEngineerAgent(BaseAgent):
         self.llm = llm_service
 
     async def execute(self, context: AgentContext, input_data: dict) -> AgentResult:
+        if await context.is_cancelled():
+            return AgentResult(success=False, output_data={}, error="Pipeline cancelled")
+
         shots: list[dict] = input_data["shots"]
         style: str = input_data.get("style", "commercial")
         video_type: str = input_data.get("video_type", "commercial")
@@ -72,6 +75,8 @@ class PromptEngineerAgent(BaseAgent):
                 schema=schema,
                 image_paths=image_paths,
             )
+            if await context.is_cancelled():
+                return AgentResult(success=False, output_data={}, error="Pipeline cancelled")
             prompt_map = {item["shot_idx"]: item["video_prompt"] for item in llm_output.get("shot_prompts", [])}
             shot_prompts = []
             for shot in shots:

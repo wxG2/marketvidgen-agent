@@ -28,6 +28,7 @@ export interface PreflightCheckResult {
   estimated_audio_seconds: number
   max_video_seconds: number
   recommended_image_count: number
+  estimated_tokens: number
 }
 
 export const preflightCheck = (projectId: string, data: { script: string; image_count: number; duration_seconds: number; duration_mode: string }) =>
@@ -35,3 +36,10 @@ export const preflightCheck = (projectId: string, data: { script: string; image_
 
 export const generateScript = (projectId: string, imageIds: string[]) =>
   api.post<GenerateScriptResponse>(`/api/projects/${projectId}/generate-script`, { image_ids: imageIds }).then(r => r.data)
+
+/**
+ * Open an SSE stream for a pipeline run.
+ * Returns an EventSource; caller should listen for 'update', 'done', 'error' events.
+ */
+export const streamPipeline = (projectId: string, runId: string): EventSource =>
+  new EventSource(`/api/projects/${projectId}/pipeline/${runId}/stream`)

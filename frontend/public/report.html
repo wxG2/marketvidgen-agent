@@ -1,0 +1,1270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VidGen - Project Analysis Report</title>
+<style>
+  /* ── Solarized Light Palette ── */
+  :root {
+    --base03:  #002b36;
+    --base02:  #073642;
+    --base01:  #586e75;
+    --base00:  #657b83;
+    --base0:   #839496;
+    --base1:   #93a1a1;
+    --base2:   #eee8d5;
+    --base3:   #fdf6e3;
+    --yellow:  #b58900;
+    --orange:  #cb4b16;
+    --red:     #dc322f;
+    --magenta: #d33682;
+    --violet:  #6c71c4;
+    --blue:    #268bd2;
+    --cyan:    #2aa198;
+    --green:   #859900;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', 'Menlo', monospace;
+    background: var(--base3);
+    color: var(--base00);
+    line-height: 1.7;
+    font-size: 14px;
+  }
+
+  /* ── Layout ── */
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+
+  /* ── Header ── */
+  header {
+    border-bottom: 2px solid var(--base2);
+    padding-bottom: 32px;
+    margin-bottom: 48px;
+  }
+  header h1 {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--base02);
+    letter-spacing: -0.5px;
+  }
+  header .subtitle {
+    color: var(--base01);
+    font-size: 14px;
+    margin-top: 6px;
+  }
+  header .meta {
+    display: flex;
+    gap: 24px;
+    margin-top: 16px;
+    flex-wrap: wrap;
+  }
+  header .meta-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--base01);
+    background: var(--base2);
+    padding: 4px 12px;
+    border-radius: 4px;
+  }
+  header .meta-item .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .dot-green  { background: var(--green); }
+  .dot-yellow { background: var(--yellow); }
+  .dot-orange { background: var(--orange); }
+  .dot-red    { background: var(--red); }
+  .dot-blue   { background: var(--blue); }
+  .dot-cyan   { background: var(--cyan); }
+
+  /* ── Table of Contents ── */
+  nav.toc {
+    background: var(--base2);
+    border-radius: 8px;
+    padding: 20px 24px;
+    margin-bottom: 48px;
+  }
+  nav.toc h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--base01);
+    margin-bottom: 12px;
+  }
+  nav.toc ol {
+    list-style: none;
+    counter-reset: toc;
+    columns: 2;
+    column-gap: 32px;
+  }
+  nav.toc li {
+    counter-increment: toc;
+    margin-bottom: 4px;
+  }
+  nav.toc li::before {
+    content: counter(toc, decimal-leading-zero) " ";
+    color: var(--base1);
+    font-size: 11px;
+  }
+  nav.toc a {
+    color: var(--blue);
+    text-decoration: none;
+    font-size: 13px;
+  }
+  nav.toc a:hover { text-decoration: underline; }
+
+  /* ── Sections ── */
+  section {
+    margin-bottom: 48px;
+  }
+  section h2 {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--base02);
+    border-left: 4px solid var(--cyan);
+    padding-left: 14px;
+    margin-bottom: 20px;
+  }
+  section h3 {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--base01);
+    margin: 24px 0 10px;
+  }
+  section h4 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--violet);
+    margin: 16px 0 6px;
+  }
+  p, li { color: var(--base00); }
+  p { margin-bottom: 12px; }
+  ul, ol { padding-left: 20px; margin-bottom: 12px; }
+  li { margin-bottom: 4px; }
+
+  /* ── Cards ── */
+  .card {
+    background: #fff;
+    border: 1px solid var(--base2);
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .card-title {
+    font-weight: 700;
+    font-size: 14px;
+    color: var(--base02);
+  }
+
+  /* ── Severity badges ── */
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 10px;
+    border-radius: 12px;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+  }
+  .badge-critical { background: #fce4e4; color: var(--red); }
+  .badge-high     { background: #fde8d8; color: var(--orange); }
+  .badge-medium   { background: #fdf4d5; color: var(--yellow); }
+  .badge-low      { background: #e0f5f3; color: var(--cyan); }
+  .badge-info     { background: #deedfb; color: var(--blue); }
+  .badge-ok       { background: #e6f2d3; color: var(--green); }
+
+  /* ── Code blocks ── */
+  code {
+    font-family: inherit;
+    background: var(--base2);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 13px;
+    color: var(--base01);
+  }
+  pre {
+    background: var(--base2);
+    border-radius: 6px;
+    padding: 16px;
+    overflow-x: auto;
+    margin-bottom: 12px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--base01);
+  }
+  pre .kw  { color: var(--green); }
+  pre .str { color: var(--cyan); }
+  pre .cm  { color: var(--base1); font-style: italic; }
+  pre .fn  { color: var(--blue); }
+  pre .num { color: var(--magenta); }
+
+  /* ── Tables ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 16px;
+    font-size: 13px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--base2);
+  }
+  th {
+    font-weight: 700;
+    color: var(--base01);
+    background: var(--base2);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+  }
+  tr:hover td { background: rgba(238, 232, 213, 0.4); }
+
+  /* ── Architecture diagram ── */
+  .arch-diagram {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 24px;
+    background: #fff;
+    border: 1px solid var(--base2);
+    border-radius: 8px;
+    margin-bottom: 16px;
+  }
+  .arch-row {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  .arch-box {
+    padding: 8px 18px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    text-align: center;
+    min-width: 120px;
+  }
+  .arch-box.user    { background: var(--base2); color: var(--base01); }
+  .arch-box.agent   { background: #deedfb; color: var(--blue); border: 1px solid #b8d8f8; }
+  .arch-box.service { background: #e0f5f3; color: var(--cyan); border: 1px solid #b3e8e2; }
+  .arch-box.ext     { background: #fdf4d5; color: var(--yellow); border: 1px solid #f0dea0; }
+  .arch-arrow {
+    color: var(--base1);
+    font-size: 16px;
+    line-height: 1;
+  }
+  .arch-parallel {
+    display: flex;
+    gap: 32px;
+  }
+
+  /* ── Score ring ── */
+  .score-ring {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 64px; height: 64px;
+    border-radius: 50%;
+    font-size: 22px;
+    font-weight: 800;
+  }
+  .score-good    { background: #e6f2d3; color: var(--green); border: 3px solid var(--green); }
+  .score-warning { background: #fdf4d5; color: var(--yellow); border: 3px solid var(--yellow); }
+  .score-danger  { background: #fce4e4; color: var(--red); border: 3px solid var(--red); }
+
+  /* ── Issue list ── */
+  .issue {
+    padding: 14px 18px;
+    border-left: 3px solid var(--base2);
+    margin-bottom: 10px;
+    background: #fff;
+    border-radius: 0 6px 6px 0;
+  }
+  .issue.critical { border-left-color: var(--red); }
+  .issue.high     { border-left-color: var(--orange); }
+  .issue.medium   { border-left-color: var(--yellow); }
+  .issue.low      { border-left-color: var(--cyan); }
+
+  .issue-title {
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--base02);
+    margin-bottom: 4px;
+  }
+  .issue-file {
+    font-size: 11px;
+    color: var(--base1);
+    margin-bottom: 6px;
+  }
+  .issue-desc {
+    font-size: 13px;
+    color: var(--base00);
+  }
+
+  /* ── Progress bar ── */
+  .progress-wrap {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+  .progress-label {
+    font-size: 12px;
+    color: var(--base01);
+    min-width: 140px;
+  }
+  .progress-bar {
+    flex: 1;
+    height: 8px;
+    background: var(--base2);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.4s ease;
+  }
+  .fill-green  { background: var(--green); }
+  .fill-yellow { background: var(--yellow); }
+  .fill-orange { background: var(--orange); }
+  .fill-red    { background: var(--red); }
+  .fill-blue   { background: var(--blue); }
+  .fill-cyan   { background: var(--cyan); }
+  .progress-pct {
+    font-size: 12px;
+    color: var(--base01);
+    min-width: 36px;
+    text-align: right;
+  }
+
+  /* ── Feature matrix ── */
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .feature-item {
+    background: #fff;
+    border: 1px solid var(--base2);
+    border-radius: 6px;
+    padding: 14px;
+  }
+  .feature-item .icon {
+    font-size: 18px;
+    margin-bottom: 6px;
+  }
+  .feature-item .name {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--base02);
+    margin-bottom: 4px;
+  }
+  .feature-item .status {
+    font-size: 11px;
+  }
+
+  /* ── Roadmap ── */
+  .roadmap-phase {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 20px;
+    align-items: flex-start;
+  }
+  .phase-marker {
+    min-width: 80px;
+    text-align: center;
+    padding: 6px 0;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-top: 2px;
+  }
+  .phase-p0 { background: #fce4e4; color: var(--red); }
+  .phase-p1 { background: #fde8d8; color: var(--orange); }
+  .phase-p2 { background: #fdf4d5; color: var(--yellow); }
+  .phase-p3 { background: #deedfb; color: var(--blue); }
+
+  .phase-content {
+    flex: 1;
+    border-left: 2px solid var(--base2);
+    padding-left: 16px;
+  }
+  .phase-content h4 { margin-top: 0; }
+
+  /* ── Footer ── */
+  footer {
+    border-top: 1px solid var(--base2);
+    padding-top: 24px;
+    margin-top: 48px;
+    font-size: 12px;
+    color: var(--base1);
+    text-align: center;
+  }
+
+  /* ── Stats row ── */
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: #fff;
+    border: 1px solid var(--base2);
+    border-radius: 8px;
+    padding: 16px;
+    text-align: center;
+  }
+  .stat-value {
+    font-size: 28px;
+    font-weight: 800;
+    color: var(--base02);
+  }
+  .stat-label {
+    font-size: 11px;
+    color: var(--base1);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-top: 4px;
+  }
+
+  @media (max-width: 700px) {
+    nav.toc ol { columns: 1; }
+    .stats-row { grid-template-columns: repeat(2, 1fr); }
+    .arch-parallel { flex-direction: column; gap: 8px; }
+    header .meta { flex-direction: column; gap: 8px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<header>
+  <h1>VidGen &mdash; Project Analysis Report</h1>
+  <div class="subtitle">AI Multi-Agent Short Video Generation Platform &middot; Full Technical &amp; Product Audit</div>
+  <div class="meta">
+    <span class="meta-item"><span class="dot dot-cyan"></span> Date: 2026-03-23</span>
+    <span class="meta-item"><span class="dot dot-blue"></span> Backend: FastAPI + SQLAlchemy Async</span>
+    <span class="meta-item"><span class="dot dot-green"></span> Frontend: React 19 + TypeScript + Vite</span>
+    <span class="meta-item"><span class="dot dot-yellow"></span> Agents: 5-node DAG Pipeline</span>
+    <span class="meta-item"><span class="dot dot-orange"></span> Providers: Qwen &middot; Seedance &middot; Kling</span>
+  </div>
+</header>
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<nav class="toc">
+  <h2>Table of Contents</h2>
+  <ol>
+    <li><a href="#overview">Project Overview &amp; Metrics</a></li>
+    <li><a href="#architecture">Architecture Analysis</a></li>
+    <li><a href="#health">Codebase Health Scorecard</a></li>
+    <li><a href="#issues-backend">Backend Issues</a></li>
+    <li><a href="#issues-frontend">Frontend Issues</a></li>
+    <li><a href="#features">Feature Completeness Matrix</a></li>
+    <li><a href="#product">Product Enhancement Proposals</a></li>
+    <li><a href="#tech">Technical Improvement Roadmap</a></li>
+    <li><a href="#orphan">Dead Code &amp; Cleanup</a></li>
+    <li><a href="#roadmap">Prioritized Action Plan</a></li>
+  </ol>
+</nav>
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<section id="overview">
+  <h2>01 &mdash; Project Overview &amp; Metrics</h2>
+
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="stat-value">~5.5k</div>
+      <div class="stat-label">Lines of Code</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">5</div>
+      <div class="stat-label">Pipeline Agents</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">12</div>
+      <div class="stat-label">Backend Services</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">15+</div>
+      <div class="stat-label">API Endpoints</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">0%</div>
+      <div class="stat-label">Test Coverage</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">13</div>
+      <div class="stat-label">DB Models</div>
+    </div>
+  </div>
+
+  <h3>Tech Stack</h3>
+  <table>
+    <tr><th>Layer</th><th>Technology</th><th>Version</th><th>Notes</th></tr>
+    <tr><td>Backend</td><td>FastAPI + uvicorn</td><td>0.115</td><td>Async ASGI, full async/await</td></tr>
+    <tr><td>ORM</td><td>SQLAlchemy async</td><td>2.0</td><td>aiosqlite driver for SQLite</td></tr>
+    <tr><td>Frontend</td><td>React + TypeScript</td><td>19.2</td><td>Vite 8, Zustand 5, Tailwind 4</td></tr>
+    <tr><td>LLM</td><td>Qwen Omni (DashScope)</td><td>&mdash;</td><td>Structured JSON, multimodal</td></tr>
+    <tr><td>TTS</td><td>Qwen3-TTS (CosyVoice)</td><td>&mdash;</td><td>Multi-voice Chinese synthesis</td></tr>
+    <tr><td>Video Gen</td><td>Seedance 1.5 Pro / Kling v3</td><td>&mdash;</td><td>Image-to-video, 5s clips</td></tr>
+    <tr><td>Composition</td><td>FFmpeg</td><td>&mdash;</td><td>Concat, mux, subtitle overlay</td></tr>
+  </table>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<section id="architecture">
+  <h2>02 &mdash; Architecture Analysis</h2>
+
+  <h3>Pipeline DAG</h3>
+  <div class="arch-diagram">
+    <div class="arch-row">
+      <div class="arch-box user">User Input<br><small>script + images + config</small></div>
+    </div>
+    <div class="arch-arrow">&#9660;</div>
+    <div class="arch-row">
+      <div class="arch-box agent">Orchestrator Agent<br><small>script decomposition &rarr; shots</small></div>
+    </div>
+    <div class="arch-arrow">&#9660;</div>
+    <div class="arch-row">
+      <div class="arch-box agent">Prompt Engineer Agent<br><small>video prompts + voice design</small></div>
+    </div>
+    <div class="arch-arrow">&#9660; parallel</div>
+    <div class="arch-parallel">
+      <div class="arch-box service">Audio &amp; Subtitle<br><small>TTS + SRT timing</small></div>
+      <div class="arch-box service">Video Generator<br><small>Seedance image&rarr;video</small></div>
+    </div>
+    <div class="arch-arrow">&#9660;</div>
+    <div class="arch-row">
+      <div class="arch-box agent">Video Editor Agent<br><small>FFmpeg assembly</small></div>
+    </div>
+    <div class="arch-arrow">&#9660;</div>
+    <div class="arch-row">
+      <div class="arch-box user">Final Video<br><small>MP4 download</small></div>
+    </div>
+  </div>
+
+  <h3>Architectural Strengths</h3>
+  <ul>
+    <li><strong>Clean Agent Pattern</strong> &mdash; <code>BaseAgent</code> template with automatic DB tracing, timing, error recording</li>
+    <li><strong>Mock/Real Dual Layer</strong> &mdash; every external service has a mock implementation, enabling zero-key local dev</li>
+    <li><strong>Full Async</strong> &mdash; 95%+ backend is async/await, proper connection pooling</li>
+    <li><strong>Token Accounting</strong> &mdash; per-agent, per-model usage tracking preserved in DB</li>
+    <li><strong>Platform Adaptation</strong> &mdash; automatic image preprocessing for Douyin/Xiaohongshu/Bilibili resolutions</li>
+    <li><strong>Graceful Fallbacks</strong> &mdash; LLM failures fall back to template-based prompt generation</li>
+  </ul>
+
+  <h3>Architectural Concerns</h3>
+  <ul>
+    <li><strong>No Event Streaming</strong> &mdash; <code>sse-starlette</code> in deps but pipeline progress uses polling (2-3s interval)</li>
+    <li><strong>Single SQLite DB</strong> &mdash; no WAL mode configured, potential write contention under load</li>
+    <li><strong>Background Tasks</strong> &mdash; uses <code>asyncio.create_task()</code> directly, no task queue (Celery, ARQ) for reliability</li>
+    <li><strong>No Idempotency</strong> &mdash; pipeline launch has no dedup protection; double-clicks create duplicate runs</li>
+    <li><strong>Artifact Accumulation</strong> &mdash; <code>data/generated/</code> grows indefinitely with no cleanup policy</li>
+  </ul>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<section id="health">
+  <h2>03 &mdash; Codebase Health Scorecard</h2>
+
+  <div class="progress-wrap">
+    <span class="progress-label">Type Safety</span>
+    <div class="progress-bar"><div class="progress-fill fill-green" style="width:85%"></div></div>
+    <span class="progress-pct">85%</span>
+  </div>
+  <div class="progress-wrap">
+    <span class="progress-label">Error Handling</span>
+    <div class="progress-bar"><div class="progress-fill fill-orange" style="width:40%"></div></div>
+    <span class="progress-pct">40%</span>
+  </div>
+  <div class="progress-wrap">
+    <span class="progress-label">Test Coverage</span>
+    <div class="progress-bar"><div class="progress-fill fill-red" style="width:0%"></div></div>
+    <span class="progress-pct">0%</span>
+  </div>
+  <div class="progress-wrap">
+    <span class="progress-label">Code Structure</span>
+    <div class="progress-bar"><div class="progress-fill fill-green" style="width:88%"></div></div>
+    <span class="progress-pct">88%</span>
+  </div>
+  <div class="progress-wrap">
+    <span class="progress-label">API Design</span>
+    <div class="progress-bar"><div class="progress-fill fill-green" style="width:82%"></div></div>
+    <span class="progress-pct">82%</span>
+  </div>
+  <div class="progress-wrap">
+    <span class="progress-label">Documentation</span>
+    <div class="progress-bar"><div class="progress-fill fill-yellow" style="width:30%"></div></div>
+    <span class="progress-pct">30%</span>
+  </div>
+  <div class="progress-wrap">
+    <span class="progress-label">Observability</span>
+    <div class="progress-bar"><div class="progress-fill fill-orange" style="width:25%"></div></div>
+    <span class="progress-pct">25%</span>
+  </div>
+  <div class="progress-wrap">
+    <span class="progress-label">Production Readiness</span>
+    <div class="progress-bar"><div class="progress-fill fill-yellow" style="width:35%"></div></div>
+    <span class="progress-pct">35%</span>
+  </div>
+  <div class="progress-wrap">
+    <span class="progress-label">Accessibility</span>
+    <div class="progress-bar"><div class="progress-fill fill-red" style="width:15%"></div></div>
+    <span class="progress-pct">15%</span>
+  </div>
+  <div class="progress-wrap">
+    <span class="progress-label">UX Polish</span>
+    <div class="progress-bar"><div class="progress-fill fill-yellow" style="width:60%"></div></div>
+    <span class="progress-pct">60%</span>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<section id="issues-backend">
+  <h2>04 &mdash; Backend Issues</h2>
+
+  <div class="issue critical">
+    <div class="card-header">
+      <span class="issue-title">B-01: Zero Test Coverage</span>
+      <span class="badge badge-critical">Critical</span>
+    </div>
+    <div class="issue-file">Entire codebase</div>
+    <div class="issue-desc">
+      No test files exist. Every service, agent, and router is untested. Mock implementations exist but are only used for
+      local dev, not as test doubles. Regression risk on every change is extreme.<br>
+      <strong>Fix:</strong> Add pytest + pytest-asyncio. Start with agent pipeline integration tests using mock services.
+    </div>
+  </div>
+
+  <div class="issue critical">
+    <div class="card-header">
+      <span class="issue-title">B-02: No Database Migration Framework</span>
+      <span class="badge badge-critical">Critical</span>
+    </div>
+    <div class="issue-file">app/database.py &mdash; <code>create_all()</code> on startup</div>
+    <div class="issue-desc">
+      Schema changes require dropping the database. No alembic or equivalent migration tooling.
+      Production deployments will lose data on schema evolution.<br>
+      <strong>Fix:</strong> Add <code>alembic</code> with async support. Generate initial migration from current models.
+    </div>
+  </div>
+
+  <div class="issue high">
+    <div class="card-header">
+      <span class="issue-title">B-03: Background Tasks Without Reliability</span>
+      <span class="badge badge-high">High</span>
+    </div>
+    <div class="issue-file">app/routers/pipeline.py:62 &mdash; <code>asyncio.create_task()</code></div>
+    <div class="issue-desc">
+      Pipeline runs as in-process asyncio tasks. Server restart = lost pipeline.
+      No task persistence, no retry queue, no dead-letter handling.<br>
+      <strong>Fix:</strong> Add ARQ (Redis-based async queue) or Celery for durable task execution.
+    </div>
+  </div>
+
+  <div class="issue high">
+    <div class="card-header">
+      <span class="issue-title">B-04: No Pipeline Deduplication</span>
+      <span class="badge badge-high">High</span>
+    </div>
+    <div class="issue-file">app/routers/pipeline.py:48-64 &mdash; <code>launch_pipeline()</code></div>
+    <div class="issue-desc">
+      Double-clicking "generate" creates two identical pipeline runs.
+      No idempotency key or "pending" status check before launch.<br>
+      <strong>Fix:</strong> Accept an idempotency key from frontend; check for existing pending/running runs.
+    </div>
+  </div>
+
+  <div class="issue high">
+    <div class="card-header">
+      <span class="issue-title">B-05: No Artifact Cleanup Policy</span>
+      <span class="badge badge-high">High</span>
+    </div>
+    <div class="issue-file">app/config.py &mdash; <code>GENERATED_DIR</code></div>
+    <div class="issue-desc">
+      Generated audio, video clips, and final videos accumulate in <code>data/generated/</code> indefinitely.
+      Seedance generates ~10MB per 5s clip; disk usage grows rapidly.<br>
+      <strong>Fix:</strong> Add retention policy (e.g., auto-delete artifacts older than N days, or after project deletion).
+    </div>
+  </div>
+
+  <div class="issue medium">
+    <div class="card-header">
+      <span class="issue-title">B-06: Deprecated <code>datetime.utcnow()</code></span>
+      <span class="badge badge-medium">Medium</span>
+    </div>
+    <div class="issue-file">app/agents/pipeline.py:65,130 &middot; app/routers/pipeline.py (multiple)</div>
+    <div class="issue-desc">
+      Python 3.12 deprecated <code>datetime.utcnow()</code>. Should use <code>datetime.now(timezone.utc)</code>.<br>
+      <strong>Fix:</strong> Replace all <code>datetime.utcnow()</code> with <code>datetime.now(timezone.utc)</code>.
+    </div>
+  </div>
+
+  <div class="issue medium">
+    <div class="card-header">
+      <span class="issue-title">B-07: SSE Dependency Unused</span>
+      <span class="badge badge-medium">Medium</span>
+    </div>
+    <div class="issue-file">requirements.txt &mdash; <code>sse-starlette==2.1.3</code></div>
+    <div class="issue-desc">
+      Server-Sent Events library installed but not used. Pipeline progress uses polling at 2-3s intervals.
+      SSE would reduce latency and eliminate wasted requests.<br>
+      <strong>Fix:</strong> Implement SSE endpoint for pipeline progress; replace polling in frontend.
+    </div>
+  </div>
+
+  <div class="issue medium">
+    <div class="card-header">
+      <span class="issue-title">B-08: SQLite Write Contention Risk</span>
+      <span class="badge badge-medium">Medium</span>
+    </div>
+    <div class="issue-file">app/database.py</div>
+    <div class="issue-desc">
+      SQLite with default journal mode. Parallel agent writes (audio + video) may conflict.
+      No WAL mode configured; no connection pool tuning for SQLite specifics.<br>
+      <strong>Fix:</strong> Enable WAL mode: <code>PRAGMA journal_mode=WAL</code> on connection. Or migrate to PostgreSQL.
+    </div>
+  </div>
+
+  <div class="issue medium">
+    <div class="card-header">
+      <span class="issue-title">B-09: Subtitle Timing is Naive</span>
+      <span class="badge badge-medium">Medium</span>
+    </div>
+    <div class="issue-file">app/services/tts_service.py &mdash; <code>generate_subtitles()</code></div>
+    <div class="issue-desc">
+      Splits script by sentence boundaries (。！？) with fixed 3s per segment.
+      Ignores actual TTS audio timing. Result: subtitles drift from audio for varied sentence lengths.<br>
+      <strong>Fix:</strong> Use TTS service word-level timestamps (if available) or force-align with audio using Whisper.
+    </div>
+  </div>
+
+  <div class="issue low">
+    <div class="card-header">
+      <span class="issue-title">B-10: Hardcoded System Prompts</span>
+      <span class="badge badge-low">Low</span>
+    </div>
+    <div class="issue-file">app/prompts/system_prompts.py</div>
+    <div class="issue-desc">
+      All LLM system prompts are hardcoded Python strings. No versioning, A/B testing, or user customization.<br>
+      <strong>Fix:</strong> Move to configurable prompt templates (DB or file-based) with version tracking.
+    </div>
+  </div>
+
+  <div class="issue low">
+    <div class="card-header">
+      <span class="issue-title">B-11: No Docker / Deployment Config</span>
+      <span class="badge badge-low">Low</span>
+    </div>
+    <div class="issue-file">Project root</div>
+    <div class="issue-desc">
+      No Dockerfile, docker-compose.yml, or CI/CD config. Deployment requires manual setup.<br>
+      <strong>Fix:</strong> Add multi-stage Dockerfile (backend + frontend build) and docker-compose for local stack.
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<section id="issues-frontend">
+  <h2>05 &mdash; Frontend Issues</h2>
+
+  <div class="issue high">
+    <div class="card-header">
+      <span class="issue-title">F-01: Silent API Failures Throughout</span>
+      <span class="badge badge-high">High</span>
+    </div>
+    <div class="issue-file">App.tsx:27-28 &middot; AutoModeStudio.tsx (polling) &middot; UsageDashboardPage.tsx</div>
+    <div class="issue-desc">
+      <code>.catch(() =&gt; {})</code> used extensively. Users receive no feedback when:
+      material scan fails, pipeline status poll fails, usage data fails to load.
+      No toast/notification system exists.<br>
+      <strong>Fix:</strong> Add global toast notification system (e.g., react-hot-toast). Add axios error interceptor.
+    </div>
+  </div>
+
+  <div class="issue high">
+    <div class="card-header">
+      <span class="issue-title">F-02: Polling Without Backoff or SSE</span>
+      <span class="badge badge-high">High</span>
+    </div>
+    <div class="issue-file">AutoModeStudio.tsx &middot; PipelineProgress.tsx &middot; GenerationPanel.tsx</div>
+    <div class="issue-desc">
+      Fixed 2-3s polling intervals for pipeline status. No exponential backoff on failure.
+      Wastes bandwidth for completed/failed pipelines. No connection health detection.<br>
+      <strong>Fix:</strong> Switch to SSE for real-time updates; or implement backoff (2s &rarr; 4s &rarr; 8s on error).
+    </div>
+  </div>
+
+  <div class="issue high">
+    <div class="card-header">
+      <span class="issue-title">F-03: No API Timeout or Retry</span>
+      <span class="badge badge-high">High</span>
+    </div>
+    <div class="issue-file">api/client.ts</div>
+    <div class="issue-desc">
+      Axios client has no timeout configuration. Long-running requests hang indefinitely.
+      No automatic retry logic for transient failures (network blip, 502/503).<br>
+      <strong>Fix:</strong> Set <code>timeout: 30000</code> on axios instance. Add retry interceptor with 3 attempts for GET requests.
+    </div>
+  </div>
+
+  <div class="issue medium">
+    <div class="card-header">
+      <span class="issue-title">F-04: Unused Dependencies</span>
+      <span class="badge badge-medium">Medium</span>
+    </div>
+    <div class="issue-file">package.json</div>
+    <div class="issue-desc">
+      <code>@tanstack/react-query</code> installed but never imported (axios used directly).
+      <code>react-router-dom</code> installed but app uses single-page state-driven navigation.<br>
+      <strong>Fix:</strong> Remove unused deps to reduce bundle size. Or adopt react-query for server state management.
+    </div>
+  </div>
+
+  <div class="issue medium">
+    <div class="card-header">
+      <span class="issue-title">F-05: No Loading Skeletons</span>
+      <span class="badge badge-medium">Medium</span>
+    </div>
+    <div class="issue-file">All data-fetching components</div>
+    <div class="issue-desc">
+      Components show blank space while loading. No skeleton loaders or shimmer effects.
+      Perceived performance is poor on slower connections.<br>
+      <strong>Fix:</strong> Add skeleton components for material grid, pipeline board, and dashboard.
+    </div>
+  </div>
+
+  <div class="issue medium">
+    <div class="card-header">
+      <span class="issue-title">F-06: TypeScript Strictness Disabled</span>
+      <span class="badge badge-medium">Medium</span>
+    </div>
+    <div class="issue-file">tsconfig.app.json &mdash; <code>noUnusedLocals: false</code></div>
+    <div class="issue-desc">
+      <code>noUnusedLocals</code> and <code>noUnusedParameters</code> are disabled.
+      Dead code accumulates without compiler warnings.<br>
+      <strong>Fix:</strong> Re-enable both flags; clean up unused variables that surface.
+    </div>
+  </div>
+
+  <div class="issue medium">
+    <div class="card-header">
+      <span class="issue-title">F-07: Memory Leaks in Polling</span>
+      <span class="badge badge-medium">Medium</span>
+    </div>
+    <div class="issue-file">AnalysisPanel.tsx &middot; GenerationPanel.tsx</div>
+    <div class="issue-desc">
+      Some polling intervals store timer reference in local variable (not ref).
+      If component unmounts during polling, interval continues firing.<br>
+      <strong>Fix:</strong> Use <code>useRef</code> for all interval references; clear in useEffect cleanup.
+    </div>
+  </div>
+
+  <div class="issue low">
+    <div class="card-header">
+      <span class="issue-title">F-08: No Accessibility (a11y)</span>
+      <span class="badge badge-low">Low</span>
+    </div>
+    <div class="issue-file">All components</div>
+    <div class="issue-desc">
+      No ARIA labels, roles, or keyboard navigation. Screen readers cannot parse the UI.
+      Video/audio elements lack captions. Progress indicators lack <code>aria-live</code> regions.<br>
+      <strong>Fix:</strong> Add ARIA attributes incrementally. Start with interactive controls and status regions.
+    </div>
+  </div>
+
+  <div class="issue low">
+    <div class="card-header">
+      <span class="issue-title">F-09: No Error Boundary</span>
+      <span class="badge badge-low">Low</span>
+    </div>
+    <div class="issue-file">App.tsx</div>
+    <div class="issue-desc">
+      No React error boundary. Unhandled component errors crash the entire app with a blank screen.<br>
+      <strong>Fix:</strong> Wrap App in an <code>ErrorBoundary</code> component with a fallback "reload" UI.
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<section id="features">
+  <h2>06 &mdash; Feature Completeness Matrix</h2>
+
+  <div class="feature-grid">
+    <div class="feature-item">
+      <div class="name">One-Click Pipeline</div>
+      <div class="status"><span class="badge badge-ok">Complete</span></div>
+    </div>
+    <div class="feature-item">
+      <div class="name">Material Library</div>
+      <div class="status"><span class="badge badge-ok">Complete</span></div>
+    </div>
+    <div class="feature-item">
+      <div class="name">Script Auto-Generation</div>
+      <div class="status"><span class="badge badge-ok">Complete</span></div>
+    </div>
+    <div class="feature-item">
+      <div class="name">Multi-Platform Output</div>
+      <div class="status"><span class="badge badge-ok">Complete</span></div>
+    </div>
+    <div class="feature-item">
+      <div class="name">TTS + Subtitles</div>
+      <div class="status"><span class="badge badge-ok">Complete</span></div>
+    </div>
+    <div class="feature-item">
+      <div class="name">Token Usage Tracking</div>
+      <div class="status"><span class="badge badge-ok">Complete</span></div>
+    </div>
+    <div class="feature-item">
+      <div class="name">Preflight Check</div>
+      <div class="status"><span class="badge badge-ok">Complete</span></div>
+    </div>
+    <div class="feature-item">
+      <div class="name">Failed Agent Retry</div>
+      <div class="status"><span class="badge badge-ok">Complete</span></div>
+    </div>
+    <div class="feature-item">
+      <div class="name">Real-Time Progress (SSE)</div>
+      <div class="status"><span class="badge badge-medium">Polling Only</span></div>
+    </div>
+    <div class="feature-item">
+      <div class="name">Video Preview &amp; Download</div>
+      <div class="status"><span class="badge badge-ok">Complete</span></div>
+    </div>
+    <div class="feature-item">
+      <div class="name">Timeline Editor (DnD)</div>
+      <div class="status"><span class="badge badge-ok">Complete</span></div>
+    </div>
+    <div class="feature-item">
+      <div class="name">Talking Head Composite</div>
+      <div class="status"><span class="badge badge-medium">Experimental</span></div>
+    </div>
+    <div class="feature-item">
+      <div class="name">Background Music</div>
+      <div class="status"><span class="badge badge-high">Missing</span></div>
+    </div>
+    <div class="feature-item">
+      <div class="name">Watermark / Branding</div>
+      <div class="status"><span class="badge badge-high">Missing</span></div>
+    </div>
+    <div class="feature-item">
+      <div class="name">Batch Generation</div>
+      <div class="status"><span class="badge badge-high">Missing</span></div>
+    </div>
+    <div class="feature-item">
+      <div class="name">Video Transition Effects</div>
+      <div class="status"><span class="badge badge-high">Missing</span></div>
+    </div>
+    <div class="feature-item">
+      <div class="name">User Authentication</div>
+      <div class="status"><span class="badge badge-critical">Missing</span></div>
+    </div>
+    <div class="feature-item">
+      <div class="name">Cost Estimation</div>
+      <div class="status"><span class="badge badge-high">Missing</span></div>
+    </div>
+    <div class="feature-item">
+      <div class="name">Video Template Library</div>
+      <div class="status"><span class="badge badge-high">Missing</span></div>
+    </div>
+    <div class="feature-item">
+      <div class="name">A/B Variant Generation</div>
+      <div class="status"><span class="badge badge-info">Future</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<section id="product">
+  <h2>07 &mdash; Product Enhancement Proposals</h2>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">P-01: Background Music &amp; Audio Mixing</span>
+      <span class="badge badge-high">High Value</span>
+    </div>
+    <p>Marketing videos need background music for atmosphere. Current pipeline only has TTS narration.</p>
+    <p><strong>Proposal:</strong> Add BGM library (royalty-free tracks by mood/genre). Video editor agent mixes BGM at -12dB under narration, with fade-in/out. Allow user to select mood (upbeat, calm, cinematic) in pipeline config.</p>
+    <p><strong>Implementation:</strong> Add <code>bgm_mood</code> field to pipeline config &rarr; orchestrator selects track &rarr; editor mixes via FFmpeg <code>amix</code> filter.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">P-02: Video Transition Effects</span>
+      <span class="badge badge-high">High Value</span>
+    </div>
+    <p>Current clips are hard-cut concatenated. Marketing videos typically use smooth transitions.</p>
+    <p><strong>Proposal:</strong> Add configurable transition effects between clips: cross-dissolve, fade-black, slide, zoom.
+    Map transitions to style (commercial &rarr; dissolve, cinematic &rarr; fade-black).</p>
+    <p><strong>Implementation:</strong> FFmpeg <code>xfade</code> filter with configurable duration (0.3-1.0s). Adjust clip timing to account for overlap.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">P-03: Watermark &amp; Brand Overlay</span>
+      <span class="badge badge-medium">Medium Value</span>
+    </div>
+    <p>Marketing videos need brand logos, contact info, or call-to-action overlays.</p>
+    <p><strong>Proposal:</strong> Allow uploading a logo/watermark image per project. Position selector (corner, center-bottom). Optional end-card with contact info.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">P-04: Batch Multi-Variant Generation</span>
+      <span class="badge badge-medium">Medium Value</span>
+    </div>
+    <p>Marketers often need 3-5 variants of the same content for A/B testing on different platforms.</p>
+    <p><strong>Proposal:</strong> "Batch mode" that generates N variants with slight prompt variations, different voice tones, or alternate shot orders. Share same audio but vary visuals.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">P-05: Video Template Library</span>
+      <span class="badge badge-medium">Medium Value</span>
+    </div>
+    <p>New users need inspiration and quick-start options. Templates reduce time-to-first-video.</p>
+    <p><strong>Proposal:</strong> Curated template library: restaurant promo, product unboxing, store tour, event highlight.
+    Each template pre-fills script style, shot structure, and voice tone.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">P-06: Cost Estimation Before Generation</span>
+      <span class="badge badge-high">High Value</span>
+    </div>
+    <p>Users have no idea how much a pipeline run will cost. Token usage shown after-the-fact is too late.</p>
+    <p><strong>Proposal:</strong> Extend preflight check to estimate costs: N images &times; Seedance API cost + TTS tokens + LLM tokens.
+    Show estimated cost in CNY/USD before launch. Track cumulative spend per project.</p>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<section id="tech">
+  <h2>08 &mdash; Technical Improvement Roadmap</h2>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">T-01: SSE Real-Time Pipeline Progress</span>
+      <span class="badge badge-info">Architecture</span>
+    </div>
+    <p>Replace polling with Server-Sent Events. <code>sse-starlette</code> is already installed.</p>
+    <pre><span class="cm"># Backend: new endpoint</span>
+<span class="kw">@router.get</span>(<span class="str">"/projects/{project_id}/pipeline/{run_id}/stream"</span>)
+<span class="kw">async def</span> <span class="fn">stream_progress</span>(project_id, run_id):
+    <span class="kw">async def</span> <span class="fn">event_generator</span>():
+        <span class="kw">while True</span>:
+            run = <span class="kw">await</span> get_run(run_id)
+            <span class="kw">yield</span> {<span class="str">"data"</span>: json.dumps(run_status)}
+            <span class="kw">if</span> run.status <span class="kw">in</span> (<span class="str">"completed"</span>, <span class="str">"failed"</span>): <span class="kw">break</span>
+            <span class="kw">await</span> asyncio.sleep(<span class="num">1</span>)
+    <span class="kw">return</span> EventSourceResponse(event_generator())</pre>
+    <p><strong>Frontend:</strong> Use <code>EventSource</code> API to receive live updates. Remove <code>setInterval</code> polling.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">T-02: Subtitle Timing via Force-Alignment</span>
+      <span class="badge badge-info">Quality</span>
+    </div>
+    <p>Current subtitle timing uses naive sentence splitting (fixed 3s per segment). This causes drift.</p>
+    <p><strong>Proposal:</strong> After TTS generates audio, run Whisper (or similar ASR) on the audio to extract
+    word-level timestamps. Generate SRT from actual speech timing. This guarantees subtitle-audio sync.</p>
+    <pre><span class="cm"># Using faster-whisper for alignment</span>
+model = WhisperModel(<span class="str">"base"</span>)
+segments, _ = model.transcribe(audio_path, word_timestamps=<span class="kw">True</span>)
+<span class="kw">for</span> seg <span class="kw">in</span> segments:
+    <span class="kw">for</span> word <span class="kw">in</span> seg.words:
+        srt_entries.append((word.start, word.end, word.word))</pre>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">T-03: Database Migration with Alembic</span>
+      <span class="badge badge-info">Infrastructure</span>
+    </div>
+    <pre>pip install alembic
+alembic init -t async migrations
+<span class="cm"># Generate migration from current models</span>
+alembic revision --autogenerate -m <span class="str">"initial schema"</span>
+alembic upgrade head</pre>
+    <p>Enables safe schema evolution without data loss.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">T-04: Structured Logging + Tracing</span>
+      <span class="badge badge-info">Observability</span>
+    </div>
+    <p>Replace stdlib logging with structured JSON logging (e.g., <code>structlog</code>).
+    Add OpenTelemetry spans for each agent execution. Export to Jaeger/Grafana for debugging.</p>
+    <pre><span class="kw">import</span> structlog
+log = structlog.get_logger()
+log.info(<span class="str">"agent.started"</span>,
+    agent=<span class="str">"video_generator"</span>,
+    trace_id=context.trace_id,
+    shot_count=len(shots))</pre>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">T-05: Docker Compose Stack</span>
+      <span class="badge badge-info">DevOps</span>
+    </div>
+    <pre><span class="cm"># docker-compose.yml</span>
+services:
+  backend:
+    build: ./backend
+    ports: [<span class="str">"8000:8000"</span>]
+    volumes: [<span class="str">"./data:/app/data"</span>, <span class="str">"./materials:/app/materials"</span>]
+    env_file: .env
+
+  frontend:
+    build: ./frontend
+    ports: [<span class="str">"3000:80"</span>]
+    depends_on: [backend]</pre>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<section id="orphan">
+  <h2>09 &mdash; Dead Code &amp; Cleanup</h2>
+
+  <p>The following files/code are orphaned after the QA Reviewer removal and can be safely deleted:</p>
+
+  <table>
+    <tr><th>File</th><th>Status</th><th>Action</th></tr>
+    <tr>
+      <td><code>backend/app/agents/qa_reviewer.py</code></td>
+      <td><span class="badge badge-high">Orphaned</span></td>
+      <td>Delete &mdash; no imports remain</td>
+    </tr>
+    <tr>
+      <td><code>backend/app/services/quality_assessor.py</code></td>
+      <td><span class="badge badge-high">Orphaned</span></td>
+      <td>Delete &mdash; only imported by qa_reviewer.py</td>
+    </tr>
+    <tr>
+      <td><code>frontend/src/components/pipeline/PipelineReport.tsx</code></td>
+      <td><span class="badge badge-high">Orphaned</span></td>
+      <td>Delete &mdash; no imports remain</td>
+    </tr>
+    <tr>
+      <td><code>frontend/src/components/pipeline/PipelineLauncher.tsx</code></td>
+      <td><span class="badge badge-medium">Superseded</span></td>
+      <td>Verify &mdash; may be superseded by AutoModeStudio</td>
+    </tr>
+    <tr>
+      <td><code>@tanstack/react-query</code> (package.json)</td>
+      <td><span class="badge badge-medium">Unused dep</span></td>
+      <td>Remove from package.json</td>
+    </tr>
+    <tr>
+      <td><code>react-router-dom</code> (package.json)</td>
+      <td><span class="badge badge-medium">Unused dep</span></td>
+      <td>Remove unless routing planned</td>
+    </tr>
+    <tr>
+      <td><code>USE_MOCK_QUALITY_ASSESSOR</code> (config.py)</td>
+      <td><span class="badge badge-low">Stale config</span></td>
+      <td>Remove from Settings</td>
+    </tr>
+  </table>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<section id="roadmap">
+  <h2>10 &mdash; Prioritized Action Plan</h2>
+
+  <div class="roadmap-phase">
+    <div class="phase-marker phase-p0">P0<br>Urgent</div>
+    <div class="phase-content">
+      <h4>Stability &amp; Reliability</h4>
+      <ul>
+        <li><strong>B-01</strong> Add pytest test suite for pipeline agents (mock services already exist)</li>
+        <li><strong>B-02</strong> Add Alembic migrations for safe schema evolution</li>
+        <li><strong>F-01</strong> Add toast notification system; replace all silent <code>catch(() =&gt; {})</code></li>
+        <li><strong>F-09</strong> Add React ErrorBoundary to prevent full-page crashes</li>
+        <li>Delete orphaned QA files (qa_reviewer.py, quality_assessor.py, PipelineReport.tsx)</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="roadmap-phase">
+    <div class="phase-marker phase-p1">P1<br>Next</div>
+    <div class="phase-content">
+      <h4>UX &amp; Performance</h4>
+      <ul>
+        <li><strong>B-07 / T-01</strong> Implement SSE for real-time pipeline progress (sse-starlette already in deps)</li>
+        <li><strong>F-03</strong> Add axios timeout + retry interceptor</li>
+        <li><strong>B-04</strong> Pipeline launch deduplication (idempotency key)</li>
+        <li><strong>F-05</strong> Add skeleton loading states for material grid and dashboard</li>
+        <li><strong>P-06</strong> Cost estimation in preflight check</li>
+        <li><strong>B-06</strong> Replace all <code>datetime.utcnow()</code> with timezone-aware calls</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="roadmap-phase">
+    <div class="phase-marker phase-p2">P2<br>Soon</div>
+    <div class="phase-content">
+      <h4>Product Features</h4>
+      <ul>
+        <li><strong>P-01</strong> Background music library + audio mixing in editor</li>
+        <li><strong>P-02</strong> Video transition effects (cross-dissolve, fade) via FFmpeg xfade</li>
+        <li><strong>P-03</strong> Watermark / brand logo overlay support</li>
+        <li><strong>T-02</strong> Subtitle timing via Whisper force-alignment</li>
+        <li><strong>B-05</strong> Artifact cleanup policy (auto-delete after N days)</li>
+        <li><strong>F-04</strong> Remove unused npm dependencies</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="roadmap-phase">
+    <div class="phase-marker phase-p3">P3<br>Later</div>
+    <div class="phase-content">
+      <h4>Scale &amp; Polish</h4>
+      <ul>
+        <li><strong>B-03</strong> Migrate background tasks to ARQ/Celery for crash resilience</li>
+        <li><strong>B-08</strong> Migrate to PostgreSQL for concurrent write safety</li>
+        <li><strong>T-04</strong> Structured logging + OpenTelemetry tracing</li>
+        <li><strong>T-05</strong> Docker Compose deployment stack</li>
+        <li><strong>P-04</strong> Batch multi-variant generation for A/B testing</li>
+        <li><strong>P-05</strong> Video template library for quick-start</li>
+        <li><strong>F-08</strong> Accessibility (ARIA labels, keyboard navigation)</li>
+        <li>User authentication &amp; multi-tenant support</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<footer>
+  VidGen Project Analysis Report &middot; Generated 2026-03-23 &middot; Solarized Light Theme
+</footer>
+
+</div>
+</body>
+</html>

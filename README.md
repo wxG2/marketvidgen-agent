@@ -13,6 +13,7 @@ The current stack uses a React + Vite frontend and a FastAPI backend. The backen
 
 - Chat-style auto mode for uploading materials, selecting images, entering a script, and triggering generation in one place
 - Manual mode for creators who want full control over upload, analysis, material selection, and editing
+- Default video generation provider is `Seedance 1.5 Pro`
 - Multi-agent pipeline:
   - `orchestrator`
   - `prompt_engineer`
@@ -21,6 +22,19 @@ The current stack uses a React + Vite frontend and a FastAPI backend. The backen
   - `video_editor`
 - Project dashboard for token usage and run progress
 - Support for Qwen Omni, Qwen TTS, and video generation providers such as WaveSpeed Kling or Volcengine Seedance
+
+## Supported Capabilities
+
+- Material-only prompt generation:
+  The project can analyze uploaded materials and generate prompts, and it is being extended toward a fully automatic "materials to script" flow.
+- Material + script to storyboard prompts:
+  The main pipeline already supports taking selected images and a user script, then generating shot-level prompts automatically.
+- Script to audio:
+  The backend can generate TTS audio and subtitle timing directly from the script.
+- Multi-clip editing and platform adaptation:
+  Multiple generated clips can be reordered, trimmed, merged with subtitles, and exported to target platform sizes such as Douyin, Xiaohongshu, and Bilibili.
+- Full workflow visualization and downloadable intermediates:
+  The UI exposes pipeline progress, token usage, and downloadable intermediate assets so users can keep editing control.
 
 ## Architecture
 
@@ -84,8 +98,8 @@ The project is wired for the following providers:
   Used for text-to-speech generation
 - `WaveSpeed Kling`
   Used for image-to-video generation when configured
-- `Seedance`
-  Supported as another video generation provider
+- `Seedance 1.5 Pro`
+  Default image-to-video provider in the current configuration
 
 Relevant files:
 
@@ -177,7 +191,9 @@ If provider keys are not configured, some services may fall back to mock impleme
 - Upload a material folder or individual images
 - Select images from the left material panel or attach images directly in chat
 - Enter a script and send
+- Let the system generate shot prompts, audio, clips, subtitles, and a merged final video
 - Watch the agent pipeline progress in the same screen
+- Download editable intermediate outputs such as prompts, audio, and generated clips
 
 ### Manual Mode
 
@@ -202,6 +218,7 @@ cd frontend && npm run build
 
 - SQLite is the default database for local development.
 - Generated assets and local material libraries are ignored in Git by default.
+- The current default video generation path uses `Seedance 1.5 Pro` via the backend provider switch.
 - The repo currently favors local development and experimentation over production deployment hardening.
 
 ## License

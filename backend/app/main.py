@@ -6,6 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select
 
 from app.config import settings
 from app.database import init_db
@@ -24,9 +25,26 @@ from app.services.video_editor_service import MockVideoEditorService, RealVideoE
 from app.routers.pipeline import get_pipeline_router
 from app.agents import (
     OrchestratorAgent, PromptEngineerAgent, AudioSubtitleAgent,
-    VideoGeneratorAgent, VideoEditorAgent, PipelineExecutor,
+    VideoGeneratorAgent, VideoEditorAgent, PipelineExecutor, LangGraphPipelineExecutor,
 )
 from app.database import async_session
+from app.models.pipeline import PipelineRun
+
+
+async def recover_interrupted_pipeline_runs():
+    """Mark in-flight runs as failed after a server restart."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(PipelineRun).where(PipelineRun.status.in_(["pending", "running"]))
+        )
+        runs = result.scalars().all()
+        if not runs:
+            return
+
+        for run in runs:
+            run.status = "failed"
+            run.error_message = "Pipeline interrupted by server restart"
+        await session.commit()
 
 
 # Dependency injection
@@ -99,8 +117,9 @@ def create_pipeline_executor():
     generator = create_generator()
     tts = create_tts()
     editor_svc = create_video_editor_service(llm)
+    executor_cls = LangGraphPipelineExecutor if settings.PIPELINE_ENGINE.lower() == "langgraph" else PipelineExecutor
 
-    return PipelineExecutor(
+    return executor_cls(
         orchestrator=OrchestratorAgent(llm_service=llm),
         prompt_engineer=PromptEngineerAgent(llm_service=llm),
         audio_agent=AudioSubtitleAgent(tts_service=tts),
@@ -116,7 +135,21 @@ async def lifespan(app: FastAPI):
     os.makedirs(settings.MATERIALS_ROOT, exist_ok=True)
     os.makedirs(settings.EXAMPLES_ROOT, exist_ok=True)
     await init_db()
+    await recover_interrupted_pipeline_runs()
+
+    import asyncio
+    from app.services.artifact_cleanup import cleanup_old_artifacts, periodic_artifact_cleanup
+
+    await cleanup_old_artifacts()
+    cleanup_task = asyncio.create_task(periodic_artifact_cleanup())
+
     yield
+
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(title="VidGen API", version="0.1.0", lifespan=lifespan)
@@ -155,3 +188,11 @@ app.mount("/generated", StaticFiles(directory=settings.GENERATED_DIR), name="gen
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.post("/api/admin/cleanup-artifacts")
+async def cleanup_artifacts(retention_days: int = 7):
+    """Manually trigger artifact cleanup."""
+    from app.services.artifact_cleanup import cleanup_old_artifacts
+    result = await cleanup_old_artifacts(retention_days=retention_days)
+    return result

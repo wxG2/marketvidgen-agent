@@ -17,6 +17,9 @@ class VideoEditorAgent(BaseAgent):
         self.output_dir = output_dir
 
     async def execute(self, context: AgentContext, input_data: dict) -> AgentResult:
+        if await context.is_cancelled():
+            return AgentResult(success=False, output_data={}, error="Pipeline cancelled")
+
         video_clips_data: list[dict] = input_data.get("video_clips", [])
         audio_path: str = input_data.get("audio_path", "")
         subtitle_path: str = input_data.get("subtitle_path", "")
@@ -39,11 +42,17 @@ class VideoEditorAgent(BaseAgent):
             context_data={
                 "video_clips_data": video_clips_data,
                 "shot_prompts": input_data.get("shot_prompts", []),
-                "qa_feedback": input_data.get("qa_feedback", []),
                 "duration_mode": input_data.get("duration_mode", "fixed"),
                 "shot_durations": input_data.get("shot_durations", []),
+                "transition": input_data.get("transition", "none"),
+                "transition_duration": input_data.get("transition_duration", 0.5),
+                "bgm_mood": input_data.get("bgm_mood", "none"),
+                "bgm_volume": input_data.get("bgm_volume", 0.15),
+                "watermark_path": input_data.get("watermark_path"),
             },
         )
+        if await context.is_cancelled():
+            return AgentResult(success=False, output_data={}, error="Pipeline cancelled")
 
         output = {
             "final_video_path": result.output_path,

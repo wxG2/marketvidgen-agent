@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useProjectStore } from './stores/projectStore'
 import { usePipelineStore } from './stores/pipelineStore'
+import { useToast } from './components/ui/Toast'
 import { createProject, listProjects, updateProject } from './api/projects'
 import { getUpload } from './api/upload'
 import { scanMaterials } from './api/materials'
@@ -22,10 +23,11 @@ function ProjectList({ onSelect }: { onSelect: (p: Project) => void }) {
   const [projects, setProjects] = useState<Project[]>([])
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
+  const { toast } = useToast()
 
   useEffect(() => {
-    listProjects().then(setProjects)
-    scanMaterials().catch(() => {})
+    listProjects().then(setProjects).catch(() => toast('error', '加载项目列表失败'))
+    scanMaterials().catch(() => {})  // scanning failure is non-critical
   }, [])
 
   const handleCreate = async () => {
@@ -96,6 +98,7 @@ function ProjectList({ onSelect }: { onSelect: (p: Project) => void }) {
 export default function App() {
   const { project, setProject, currentStep, setCurrentStep } = useProjectStore()
   const { isAutoMode, setAutoMode, reset: resetPipeline } = usePipelineStore()
+  const { toast } = useToast()
   const [showDashboard, setShowDashboard] = useState(false)
   const [upload, setUpload] = useState<VideoUpload | null>(null)
   const [analysis, setAnalysis] = useState<VideoAnalysis | null>(null)
@@ -104,8 +107,8 @@ export default function App() {
   useEffect(() => {
     if (!project) return
     setMaxStep(Math.max(project.current_step, 1))
-    getUpload(project.id).then(setUpload).catch(() => {})
-    getAnalysis(project.id).then(setAnalysis).catch(() => {})
+    getUpload(project.id).then(setUpload).catch(() => toast('warning', '加载上传记录失败'))
+    getAnalysis(project.id).then(setAnalysis).catch(() => {})  // analysis may not exist yet
   }, [project])
 
   const goToStep = useCallback((step: number) => {

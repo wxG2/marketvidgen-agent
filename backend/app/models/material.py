@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import String, Integer, Float, DateTime, Text
 from sqlalchemy.orm import Mapped, mapped_column
@@ -23,4 +23,4 @@ class Material(Base):
     height: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     media_type: Mapped[str] = mapped_column(String, nullable=False, default="image")
     tags: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    indexed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    indexed_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))

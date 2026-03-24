@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime
+import logging
+from datetime import datetime, timezone
+from typing import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sse_starlette.sse import EventSourceResponse
 
 from pathlib import Path
 
@@ -39,22 +42,64 @@ SCRIPT_GENERATION_PROMPT = """你是一名短视频脚本创作专家。用户�
 - 如果图片内容涉及商业场景（门店、产品等），要突出卖点和氛围"""
 
 
+_launch_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_launch_lock(project_id: str) -> asyncio.Lock:
+    lock = _launch_locks.get(project_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _launch_locks[project_id] = lock
+    return lock
+
+
 def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
     router = APIRouter(prefix="/api", tags=["pipeline"])
 
     @router.post("/projects/{project_id}/pipeline", response_model=PipelineRunResponse)
     async def launch_pipeline(project_id: str, req: PipelineCreateRequest, db: AsyncSession = Depends(get_db)):
-        """Launch a new pipeline run as a background task."""
-        input_config = req.model_dump()
+        """Launch a new pipeline run as a background task.
 
-        run = PipelineRun(
-            project_id=project_id,
-            status="pending",
-            input_config=json.dumps(input_config, ensure_ascii=False),
-        )
-        db.add(run)
-        await db.commit()
-        await db.refresh(run)
+        Deduplication: if a pending or running pipeline already exists for this
+        project, the existing run is returned instead of creating a duplicate.
+        """
+        async with _get_launch_lock(project_id):
+            # --- deduplication check ---
+            existing_result = await db.execute(
+                select(PipelineRun)
+                .where(
+                    PipelineRun.project_id == project_id,
+                    PipelineRun.status.in_(["pending", "running"]),
+                )
+                .order_by(PipelineRun.created_at.desc())
+                .limit(1)
+            )
+            existing_run = existing_result.scalars().first()
+            if existing_run is not None:
+                return existing_run
+
+            # --- resolve watermark image path if provided ---
+            watermark_path = None
+            if req.watermark_image_id:
+                wm_material = await db.get(Material, req.watermark_image_id)
+                if wm_material and wm_material.file_path:
+                    wm_full = Path(settings.MATERIALS_ROOT) / wm_material.file_path
+                    if wm_full.exists():
+                        watermark_path = str(wm_full.resolve())
+
+            # --- create new run ---
+            input_config = req.model_dump()
+            if watermark_path:
+                input_config["watermark_path"] = watermark_path
+
+            run = PipelineRun(
+                project_id=project_id,
+                status="pending",
+                input_config=json.dumps(input_config, ensure_ascii=False),
+            )
+            db.add(run)
+            await db.commit()
+            await db.refresh(run)
 
         # Fire and forget — pipeline runs in background
         asyncio.create_task(_run_pipeline(executor, run.id, project_id, input_config))
@@ -119,6 +164,60 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
         recorder = UsageRecorder(async_session)
         return await recorder.get_run_summary(run_id)
 
+    @router.get("/projects/{project_id}/pipeline/{run_id}/stream")
+    async def stream_pipeline(project_id: str, run_id: str):
+        """SSE stream that pushes run status + agent executions every 2s until terminal."""
+
+        log = logging.getLogger(__name__)
+
+        async def _event_generator() -> AsyncGenerator[dict, None]:
+            while True:
+                try:
+                    async with async_session() as session:
+                        run = await session.get(PipelineRun, run_id)
+                        if not run or run.project_id != project_id:
+                            yield {"event": "error", "data": json.dumps({"detail": "not found"})}
+                            return
+
+                        run_data = PipelineRunResponse.model_validate(run).model_dump(mode="json")
+
+                        result = await session.execute(
+                            select(AgentExecution)
+                            .where(AgentExecution.pipeline_run_id == run_id)
+                            .order_by(AgentExecution.created_at.asc())
+                        )
+                        execs = result.scalars().all()
+                        agents_data = [
+                            AgentExecutionResponse(
+                                id=e.id,
+                                agent_name=e.agent_name,
+                                status=e.status,
+                                attempt_number=e.attempt_number,
+                                input_data=json.loads(e.input_data) if e.input_data else None,
+                                output_data=json.loads(e.output_data) if e.output_data else None,
+                                duration_ms=e.duration_ms,
+                                error_message=e.error_message,
+                                created_at=e.created_at,
+                                completed_at=e.completed_at,
+                            ).model_dump(mode="json")
+                            for e in execs
+                        ]
+
+                        payload = json.dumps({"run": run_data, "agents": agents_data})
+                        yield {"event": "update", "data": payload}
+
+                        if run.status in ("completed", "failed", "cancelled"):
+                            yield {"event": "done", "data": payload}
+                            return
+                except Exception as exc:
+                    log.warning(f"SSE stream error for run {run_id}: {exc}")
+                    yield {"event": "error", "data": json.dumps({"detail": str(exc)})}
+                    return
+
+                await asyncio.sleep(2)
+
+        return EventSourceResponse(_event_generator())
+
     @router.post("/projects/{project_id}/pipeline/{run_id}/retry-agent")
     async def retry_failed_agent(project_id: str, run_id: str, db: AsyncSession = Depends(get_db)):
         """Re-run only the last failed agent, reconstructing context from prior successful executions."""
@@ -176,7 +275,8 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
         run.status = "running"
         run.current_agent = failed_exec.agent_name
         run.error_message = None
-        run.updated_at = datetime.utcnow()
+        run.retry_count += 1
+        run.updated_at = datetime.now(timezone.utc)
         await db.commit()
         await db.refresh(run)
 
@@ -200,7 +300,7 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
             raise HTTPException(status_code=400, detail=f"Cannot cancel pipeline in '{run.status}' status")
 
         run.status = "cancelled"
-        run.updated_at = datetime.utcnow()
+        run.updated_at = datetime.now(timezone.utc)
         await db.commit()
         return {"status": "cancelled"}
 
@@ -272,6 +372,18 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
         import math
         recommended_count = max(math.ceil(estimated_audio_s / max_d), 1)
 
+        # Rough token cost estimate:
+        # - Orchestrator: ~2k tokens per image (vision analysis)
+        # - Prompt Engineer: ~1k tokens per shot
+        # - Video Editor: ~500 tokens for edit plan
+        # - TTS/Audio: not token-based, negligible
+        estimated_tokens = (
+            image_count * 2000  # orchestrator vision
+            + image_count * 1000  # prompt engineer per-shot
+            + 500  # editor plan
+            + len(script) * 2  # script encoding overhead
+        )
+
         if estimated_audio_s > effective_video_s * 1.3:
             shortfall = estimated_audio_s - effective_video_s
             extra_needed = recommended_count - image_count
@@ -295,6 +407,7 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
                 estimated_audio_seconds=round(estimated_audio_s, 1),
                 max_video_seconds=effective_video_s,
                 recommended_image_count=recommended_count,
+                estimated_tokens=estimated_tokens,
             )
 
         return PrefightCheckResponse(
@@ -302,6 +415,7 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
             estimated_audio_seconds=round(estimated_audio_s, 1),
             max_video_seconds=effective_video_s,
             recommended_image_count=image_count,
+            estimated_tokens=estimated_tokens,
         )
 
     return router
@@ -371,36 +485,19 @@ async def _retry_agent(
         if artifact_key:
             context.artifacts[artifact_key] = result.output_data
 
-        # Determine if we need to continue the pipeline from this agent onward
-        agent_order = ["orchestrator", "prompt_engineer", "audio_subtitle", "video_generator", "video_editor"]
-        agent_idx = agent_order.index(agent_name) if agent_name in agent_order else -1
-
-        # For non-terminal agents, continue the pipeline from the next agent
-        remaining_agents = agent_order[agent_idx + 1:]
-        for next_agent_name in remaining_agents:
-            next_agent = agent_map.get(next_agent_name)
-            if not next_agent:
-                continue
-
-            # Build input for the next agent based on current artifacts
-            next_input = _build_agent_input(next_agent_name, context.artifacts, input_config)
-            next_result = await next_agent.run(context, next_input)
-            if not next_result.success:
-                raise RuntimeError(f"Agent {next_agent_name} failed: {next_result.error}")
-
-            next_artifact_key = agent_to_artifact_key.get(next_agent_name)
-            if next_artifact_key:
-                context.artifacts[next_artifact_key] = next_result.output_data
+        await _continue_pipeline_from_retry(executor, context, agent_name, input_config)
 
         # Mark completed
         final_video = context.artifacts.get("final_video", {}).get("final_video_path")
         async with async_session() as session:
             run = await session.get(PipelineRun, run_id)
             if run:
+                if run.status == "cancelled":
+                    return
                 run.status = "completed"
                 run.final_video_path = final_video
-                run.completed_at = datetime.utcnow()
-                run.updated_at = datetime.utcnow()
+                run.completed_at = datetime.now(timezone.utc)
+                run.updated_at = datetime.now(timezone.utc)
                 await session.commit()
 
     except Exception as e:
@@ -408,9 +505,11 @@ async def _retry_agent(
         async with async_session() as session:
             run = await session.get(PipelineRun, run_id)
             if run:
+                if run.status == "cancelled":
+                    return
                 run.status = "failed"
                 run.error_message = str(e)
-                run.updated_at = datetime.utcnow()
+                run.updated_at = datetime.now(timezone.utc)
                 await session.commit()
 
 
@@ -442,5 +541,81 @@ def _build_agent_input(agent_name: str, artifacts: dict, input_config: dict) -> 
             "shot_prompts": prompt_plan.get("shot_prompts", []),
             "duration_mode": input_config.get("duration_mode", "fixed"),
             "shot_durations": [s["duration_seconds"] for s in orch_plan.get("shots", [])],
+            "transition": input_config.get("transition", "none"),
+            "transition_duration": input_config.get("transition_duration", 0.5),
+            "bgm_mood": input_config.get("bgm_mood", "none"),
+            "bgm_volume": input_config.get("bgm_volume", 0.15),
+            "watermark_path": input_config.get("watermark_path"),
         }
     return {}
+
+
+async def _run_agent(executor: PipelineExecutor, context, agent_name: str, input_config: dict) -> dict:
+    agent_map = {
+        "orchestrator": executor.orchestrator,
+        "prompt_engineer": executor.prompt_engineer,
+        "audio_subtitle": executor.audio_agent,
+        "video_generator": executor.video_gen_agent,
+        "video_editor": executor.video_editor,
+    }
+    agent_to_artifact_key = {
+        "orchestrator": "orchestrator_plan",
+        "prompt_engineer": "prompt_plan",
+        "audio_subtitle": "audio",
+        "video_generator": "video_clips",
+        "video_editor": "final_video",
+    }
+
+    agent = agent_map[agent_name]
+    agent_input = _build_agent_input(agent_name, context.artifacts, input_config)
+    result = await agent.run(context, agent_input)
+    if not result.success:
+        raise RuntimeError(f"Agent {agent_name} failed: {result.error}")
+
+    artifact_key = agent_to_artifact_key.get(agent_name)
+    if artifact_key:
+        context.artifacts[artifact_key] = result.output_data
+    return result.output_data
+
+
+async def _continue_pipeline_from_retry(
+    executor: PipelineExecutor,
+    context,
+    agent_name: str,
+    input_config: dict,
+):
+    if agent_name == "orchestrator":
+        await _run_agent(executor, context, "prompt_engineer", input_config)
+        audio_result, video_result = await asyncio.gather(
+            _run_agent(executor, context, "audio_subtitle", input_config),
+            _run_agent(executor, context, "video_generator", input_config),
+        )
+        context.artifacts["audio"] = audio_result
+        context.artifacts["video_clips"] = video_result
+        await _run_agent(executor, context, "video_editor", input_config)
+        return
+
+    if agent_name == "prompt_engineer":
+        audio_result, video_result = await asyncio.gather(
+            _run_agent(executor, context, "audio_subtitle", input_config),
+            _run_agent(executor, context, "video_generator", input_config),
+        )
+        context.artifacts["audio"] = audio_result
+        context.artifacts["video_clips"] = video_result
+        await _run_agent(executor, context, "video_editor", input_config)
+        return
+
+    if agent_name == "audio_subtitle":
+        if "video_clips" not in context.artifacts:
+            await _run_agent(executor, context, "video_generator", input_config)
+        await _run_agent(executor, context, "video_editor", input_config)
+        return
+
+    if agent_name == "video_generator":
+        if "audio" not in context.artifacts:
+            await _run_agent(executor, context, "audio_subtitle", input_config)
+        await _run_agent(executor, context, "video_editor", input_config)
+        return
+
+    if agent_name == "video_editor":
+        await _run_agent(executor, context, "video_editor", input_config)
