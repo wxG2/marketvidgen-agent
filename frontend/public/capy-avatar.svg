@@ -1,0 +1,33 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" rx="64" fill="#FBF4E6"/>
+  <ellipse cx="256" cy="268" rx="168" ry="158" fill="#D6A97A" stroke="#111111" stroke-width="14"/>
+  <ellipse cx="256" cy="300" rx="58" ry="84" fill="#C3926A"/>
+  <circle cx="184" cy="238" r="14" fill="#111111"/>
+  <circle cx="328" cy="238" r="14" fill="#111111"/>
+  <path d="M241 288C246 280 255 276 256 276C257 276 266 280 271 288" stroke="#111111" stroke-width="10" stroke-linecap="round"/>
+  <path d="M256 284V338" stroke="#111111" stroke-width="10" stroke-linecap="round"/>
+  <path d="M256 338C248 346 239 350 226 350" stroke="#111111" stroke-width="10" stroke-linecap="round"/>
+  <path d="M256 338C264 346 273 350 286 350" stroke="#111111" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="142" cy="150" r="28" fill="#B4835D" stroke="#111111" stroke-width="10"/>
+  <circle cx="370" cy="150" r="28" fill="#B4835D" stroke="#111111" stroke-width="10"/>
+  <path d="M124 108C156 76 210 52 262 52C316 52 370 78 396 110L362 158H150L124 108Z" fill="#2B2B2B" stroke="#111111" stroke-width="12" stroke-linejoin="round"/>
+  <path d="M146 154C174 146 212 142 256 142C300 142 338 146 366 154V194H146V154Z" fill="#FFD567" stroke="#111111" stroke-width="12"/>
+  <path d="M132 184C164 168 206 160 256 160C306 160 348 168 380 184V216C348 204 306 198 256 198C206 198 164 204 132 216V184Z" fill="#2B2B2B" stroke="#111111" stroke-width="12"/>
+  <circle cx="256" cy="104" r="18" fill="#FFD567" stroke="#111111" stroke-width="10"/>
+  <g transform="translate(86 338) rotate(-10 170 64)">
+    <rect x="0" y="0" width="340" height="132" rx="18" fill="#2B2B2B" stroke="#111111" stroke-width="12"/>
+    <rect x="18" y="18" width="304" height="24" rx="12" fill="#FFFFFF"/>
+    <rect x="18" y="18" width="304" height="24" rx="12" stroke="#111111" stroke-width="10"/>
+    <path d="M40 30H74" stroke="#111111" stroke-width="10" stroke-linecap="round"/>
+    <path d="M94 30H128" stroke="#111111" stroke-width="10" stroke-linecap="round"/>
+    <path d="M148 30H182" stroke="#111111" stroke-width="10" stroke-linecap="round"/>
+    <path d="M202 30H236" stroke="#111111" stroke-width="10" stroke-linecap="round"/>
+    <path d="M256 30H290" stroke="#111111" stroke-width="10" stroke-linecap="round"/>
+    <text x="28" y="86" fill="#FFFFFF" font-size="26" font-family="Arial, sans-serif" font-weight="700">CAPY</text>
+    <path d="M28 104H312" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  <path d="M126 378C118 404 110 428 102 450" stroke="#111111" stroke-width="12" stroke-linecap="round"/>
+  <path d="M386 364C394 390 402 416 410 440" stroke="#111111" stroke-width="12" stroke-linecap="round"/>
+  <path d="M92 256L70 270" stroke="#111111" stroke-width="10" stroke-linecap="round"/>
+  <path d="M426 248L446 260" stroke="#111111" stroke-width="10" stroke-linecap="round"/>
+</svg>

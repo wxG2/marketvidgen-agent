@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
-from sqlalchemy import String, Integer, Float, DateTime, Text
+from sqlalchemy import String, Integer, Float, DateTime, Text, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -13,6 +13,7 @@ class Material(Base):
     __tablename__ = "materials"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=True)
     category: Mapped[str] = mapped_column(String, nullable=False, index=True)
     filename: Mapped[str] = mapped_column(String, nullable=False)
     file_path: Mapped[str] = mapped_column(String, nullable=False)

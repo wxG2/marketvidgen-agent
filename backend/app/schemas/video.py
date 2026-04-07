@@ -9,6 +9,7 @@ from pydantic import BaseModel
 class VideoUploadResponse(BaseModel):
     id: str
     project_id: str
+    session_id: Optional[str]
     filename: str
     file_size: int
     duration_seconds: Optional[float]

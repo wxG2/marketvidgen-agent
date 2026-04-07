@@ -9,10 +9,12 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import get_current_user, get_project_for_user
 from app.config import settings
 from app.database import get_db
 from app.models.timeline import TimelineClip, TimelineAsset
 from app.models.generated_video import GeneratedVideo
+from app.models.user import User
 from app.schemas.timeline import (
     TimelineAssetResponse, TimelineClipResponse,
     TimelineSaveRequest, TimelineResponse,
@@ -69,7 +71,12 @@ async def _clip_to_response(clip: TimelineClip, db: AsyncSession) -> dict:
 
 
 @router.get("/api/projects/{project_id}/timeline", response_model=TimelineResponse)
-async def get_timeline(project_id: str, db: AsyncSession = Depends(get_db)):
+async def get_timeline(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await get_project_for_user(db, user.id, project_id)
     result = await db.execute(
         select(TimelineClip)
         .where(TimelineClip.project_id == project_id)
@@ -102,7 +109,13 @@ async def get_timeline(project_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/api/projects/{project_id}/timeline", response_model=TimelineResponse)
-async def save_timeline(project_id: str, data: TimelineSaveRequest, db: AsyncSession = Depends(get_db)):
+async def save_timeline(
+    project_id: str,
+    data: TimelineSaveRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await get_project_for_user(db, user.id, project_id)
     await db.execute(delete(TimelineClip).where(TimelineClip.project_id == project_id))
 
     clips = []
@@ -136,9 +149,11 @@ async def save_timeline(project_id: str, data: TimelineSaveRequest, db: AsyncSes
 async def upload_timeline_asset(
     project_id: str,
     file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a local video, audio, or subtitle file for timeline use."""
+    await get_project_for_user(db, user.id, project_id)
     filename = file.filename or "unnamed"
     asset_type = _detect_asset_type(filename)
 
@@ -175,18 +190,28 @@ async def upload_timeline_asset(
 
 
 @router.get("/api/timeline/assets/{asset_id}/file")
-async def serve_asset_file(asset_id: str, db: AsyncSession = Depends(get_db)):
+async def serve_asset_file(
+    asset_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     asset = await db.get(TimelineAsset, asset_id)
     if not asset or not os.path.exists(asset.file_path):
         raise HTTPException(404, "Asset file not found")
+    await get_project_for_user(db, user.id, asset.project_id)
     return FileResponse(asset.file_path)
 
 
 @router.delete("/api/timeline/assets/{asset_id}")
-async def delete_asset(asset_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_asset(
+    asset_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     asset = await db.get(TimelineAsset, asset_id)
     if not asset:
         raise HTTPException(404, "Asset not found")
+    await get_project_for_user(db, user.id, asset.project_id)
     if os.path.exists(asset.file_path):
         os.remove(asset.file_path)
     # Remove clips referencing this asset

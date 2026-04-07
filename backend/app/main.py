@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import os
+import shutil
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
+from app.auth import get_current_user
 from app.config import settings
 from app.database import init_db
 from app.routers import projects, upload, materials, timeline, examples
+from app.routers.auth import router as auth_router
+from app.routers.auto_sessions import router as auto_sessions_router
+from app.routers.background_templates import get_background_templates_router
+from app.routers.social_accounts import router as social_accounts_router
 from app.routers.analysis import get_analysis_router
 from app.routers.prompts import get_prompt_router
 from app.routers.generation import get_generation_router
@@ -22,12 +28,17 @@ from app.services.image_compositor import MockImageCompositor, FluxInpaintCompos
 from app.services.lipsync_generator import MockLipSyncGenerator, LTX23LipSyncGenerator
 from app.services.tts_service import MockTTSService, RealTTSService
 from app.services.video_editor_service import MockVideoEditorService, RealVideoEditorService
+from app.services.keyframe_extractor import FFmpegKeyframeExtractor, MockKeyframeExtractor
 from app.routers.pipeline import get_pipeline_router
+from app.routers.repository import router as repository_router
 from app.agents import (
     OrchestratorAgent, PromptEngineerAgent, AudioSubtitleAgent,
-    VideoGeneratorAgent, VideoEditorAgent, PipelineExecutor, LangGraphPipelineExecutor,
+    VideoGeneratorAgent, VideoEditorAgent, QAReviewerAgent,
+    PipelineExecutor, LangGraphPipelineExecutor, SwarmPipelineExecutor,
 )
+from app.services.agent_memory import AgentMemoryService
 from app.database import async_session
+import app.models  # noqa: F401
 from app.models.pipeline import PipelineRun
 
 
@@ -112,20 +123,44 @@ def create_video_editor_service(llm):
     return RealVideoEditorService(llm_service=llm, ffmpeg_bin=settings.FFMPEG_BIN)
 
 
+def create_keyframe_extractor():
+    ffmpeg_exists = bool(shutil.which(settings.FFMPEG_BIN))
+    if not ffmpeg_exists:
+        return MockKeyframeExtractor()
+    return FFmpegKeyframeExtractor()
+
+
+def create_qa_reviewer():
+    """Create QA reviewer agent (uses same LLM as the rest of the pipeline)."""
+    if not settings.QA_REVIEW_ENABLED:
+        return None
+    llm = create_llm()
+    return QAReviewerAgent(llm=llm)
+
+
 def create_pipeline_executor():
     llm = create_llm()
     generator = create_generator()
     tts = create_tts()
     editor_svc = create_video_editor_service(llm)
-    executor_cls = LangGraphPipelineExecutor if settings.PIPELINE_ENGINE.lower() == "langgraph" else PipelineExecutor
+    keyframe_ext = create_keyframe_extractor()
+    qa_reviewer = create_qa_reviewer()
+    engine = settings.PIPELINE_ENGINE.lower()
+    if engine == "langgraph":
+        executor_cls = LangGraphPipelineExecutor
+    elif engine == "swarm":
+        executor_cls = SwarmPipelineExecutor
+    else:
+        executor_cls = PipelineExecutor
 
     return executor_cls(
-        orchestrator=OrchestratorAgent(llm_service=llm),
+        orchestrator=OrchestratorAgent(llm_service=llm, keyframe_extractor=keyframe_ext),
         prompt_engineer=PromptEngineerAgent(llm_service=llm),
         audio_agent=AudioSubtitleAgent(tts_service=tts),
         video_gen_agent=VideoGeneratorAgent(video_generator=generator),
         video_editor=VideoEditorAgent(editor_service=editor_svc, output_dir=settings.GENERATED_DIR),
         db_session_factory=async_session,
+        qa_reviewer=qa_reviewer,
     )
 
 
@@ -134,8 +169,11 @@ async def lifespan(app: FastAPI):
     # Ensure materials directory exists
     os.makedirs(settings.MATERIALS_ROOT, exist_ok=True)
     os.makedirs(settings.EXAMPLES_ROOT, exist_ok=True)
+    os.makedirs(settings.VIDEO_REPOSITORY_DIR, exist_ok=True)
     await init_db()
     await recover_interrupted_pipeline_runs()
+    # Make AgentMemoryService available app-wide
+    app.state.agent_memory = AgentMemoryService(async_session)
 
     import asyncio
     from app.services.artifact_cleanup import cleanup_old_artifacts, periodic_artifact_cleanup
@@ -152,7 +190,17 @@ async def lifespan(app: FastAPI):
         pass
 
 
-app = FastAPI(title="VidGen API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="capy API", version="0.1.0", lifespan=lifespan)
+
+AUTH_EXEMPT_PATHS = {
+    "/api/health",
+    "/api/auth/register",
+    "/api/auth/login",
+    "/api/social-accounts/douyin/callback",
+    "/openapi.json",
+    "/docs",
+    "/redoc",
+}
 
 
 @app.exception_handler(Exception)
@@ -163,15 +211,46 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    if os.getenv("TESTING", "").lower() == "true":
+        return await call_next(request)
+    path = request.url.path
+    if (
+        path in AUTH_EXEMPT_PATHS
+        or path.startswith("/docs")
+        or path.startswith("/redoc")
+        or path.startswith("/generated/")
+        or path.startswith("/repository/")
+        or path.startswith("/examples/")
+    ):
+        return await call_next(request)
+
+    if path.startswith("/api/"):
+        try:
+            async with async_session() as session:
+                user = await get_current_user(request, session)
+                request.state.current_user = user
+        except Exception as exc:
+            status_code = getattr(exc, "status_code", 401)
+            detail = getattr(exc, "detail", "Authentication required")
+            return JSONResponse(status_code=status_code, content={"detail": detail})
+
+    return await call_next(request)
+
 # Register routers
+app.include_router(auth_router)
 app.include_router(projects.router)
 app.include_router(upload.router)
+app.include_router(auto_sessions_router)
+app.include_router(social_accounts_router)
 app.include_router(get_analysis_router(create_analyzer()))
 app.include_router(materials.router)
 app.include_router(examples.router)
@@ -180,9 +259,13 @@ app.include_router(get_generation_router(create_generator()))
 app.include_router(get_talking_head_router(create_compositor(), create_lipsync()))
 app.include_router(timeline.router)
 app.include_router(get_pipeline_router(create_pipeline_executor()))
+app.include_router(get_background_templates_router(create_llm()))
+app.include_router(repository_router)
 app.mount("/examples", StaticFiles(directory=settings.EXAMPLES_ROOT), name="examples")
 os.makedirs(settings.GENERATED_DIR, exist_ok=True)
+os.makedirs(settings.VIDEO_REPOSITORY_DIR, exist_ok=True)
 app.mount("/generated", StaticFiles(directory=settings.GENERATED_DIR), name="generated")
+app.mount("/repository", StaticFiles(directory=settings.VIDEO_REPOSITORY_DIR), name="repository")
 
 
 @app.get("/api/health")

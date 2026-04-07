@@ -21,6 +21,7 @@ class PromptEngineerAgent(BaseAgent):
         style: str = input_data.get("style", "commercial")
         video_type: str = input_data.get("video_type", "commercial")
         platform: str = input_data.get("platform", "generic")
+        background_context: str = input_data.get("background_context", "")
 
         schema = {
             "name": "prompt_output",
@@ -62,6 +63,7 @@ class PromptEngineerAgent(BaseAgent):
 
         user_prompt = (
             f"Video type: {video_type} | Style: {style} | Platform: {platform}\n\n"
+            + (f"Background context:\n{background_context}\n\n" if background_context else "")
             + "\n".join(shot_descriptions)
             + "\n\nFor each shot, the corresponding image is attached in the same order. "
             "Observe each image carefully and write a cinematic video prompt that brings it to life."

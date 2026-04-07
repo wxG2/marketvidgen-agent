@@ -1,9 +1,9 @@
-import { useCallback, useState } from 'react'
-import { useDropzone } from 'react-dropzone'
-import { Upload, CheckCircle, Loader2 } from 'lucide-react'
-import { uploadVideo, getVideoStreamUrl } from '../../api/upload'
+import { useState } from 'react'
+import { Upload, CheckCircle } from 'lucide-react'
+import { getVideoStreamUrl } from '../../api/upload'
 import type { VideoUpload } from '../../types'
 import { cn } from '../../lib/utils'
+import MaterialPickerModal from '../materials/MaterialPickerModal'
 
 interface Props {
   projectId: string
@@ -12,58 +12,28 @@ interface Props {
 }
 
 export default function VideoUploader({ projectId, upload, onUploaded }: Props) {
-  const [progress, setProgress] = useState(0)
-  const [uploading, setUploading] = useState(false)
-
-  const onDrop = useCallback(async (files: File[]) => {
-    if (!files[0]) return
-    setUploading(true)
-    setProgress(0)
-    try {
-      const result = await uploadVideo(projectId, files[0], setProgress)
-      onUploaded(result)
-    } finally {
-      setUploading(false)
-    }
-  }, [projectId, onUploaded])
-
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop,
-    accept: { 'video/*': ['.mp4', '.mov', '.avi', '.mkv', '.webm'] },
-    maxFiles: 1,
-    disabled: uploading,
-  })
+  const [showPicker, setShowPicker] = useState(false)
 
   return (
     <div className="max-w-2xl mx-auto p-8">
       <div
-        {...getRootProps()}
+        onClick={() => setShowPicker(true)}
         className={cn(
           'border-2 border-dashed rounded-2xl p-12 text-center transition-all cursor-pointer',
-          isDragActive ? 'border-blue-400 bg-blue-50' : 'border-gray-300 hover:border-gray-400',
-          uploading && 'pointer-events-none opacity-60',
+          'border-gray-300 hover:border-gray-400',
         )}
       >
-        <input {...getInputProps()} />
-        {uploading ? (
-          <div className="flex flex-col items-center gap-4">
-            <Loader2 className="text-blue-500 animate-spin" size={48} />
-            <p className="text-gray-700">上传中... {progress}%</p>
-            <div className="w-full bg-gray-200 rounded-full h-2">
-              <div className="bg-blue-500 h-2 rounded-full transition-all" style={{ width: `${progress}%` }} />
-            </div>
-          </div>
-        ) : upload ? (
+        {upload ? (
           <div className="flex flex-col items-center gap-4">
             <CheckCircle className="text-green-500" size={48} />
             <p className="text-green-700">已上传: {upload.filename}</p>
-            <p className="text-sm text-gray-500">拖拽新文件可以重新上传</p>
+            <p className="text-sm text-gray-500">点击打开“添加素材”弹窗，可重新选择或上传视频</p>
           </div>
         ) : (
           <div className="flex flex-col items-center gap-4">
             <Upload className="text-gray-400" size={48} />
-            <p className="text-gray-700">拖拽视频到此处，或点击选择文件</p>
-            <p className="text-sm text-gray-500">支持 MP4, MOV, AVI, MKV, WebM</p>
+            <p className="text-gray-700">点击打开“添加素材”弹窗上传或选择文件</p>
+            <p className="text-sm text-gray-500">弹窗支持：素材库、视频库、上传图片和视频</p>
           </div>
         )}
       </div>
@@ -76,6 +46,18 @@ export default function VideoUploader({ projectId, upload, onUploaded }: Props) 
             className="w-full max-h-[400px]"
           />
         </div>
+      )}
+
+      {showPicker && (
+        <MaterialPickerModal
+          projectId={projectId}
+          onClose={() => setShowPicker(false)}
+          onMaterialsSelected={() => {}}
+          onVideoSelected={(selected) => {
+            onUploaded(selected)
+            setShowPicker(false)
+          }}
+        />
       )}
     </div>
   )

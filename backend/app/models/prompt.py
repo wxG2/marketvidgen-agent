@@ -13,6 +13,7 @@ class PromptMessage(Base):
     __tablename__ = "prompt_messages"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=True)
     project_id: Mapped[str] = mapped_column(String, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     role: Mapped[str] = mapped_column(String, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -23,6 +24,7 @@ class Prompt(Base):
     __tablename__ = "prompts"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=True)
     project_id: Mapped[str] = mapped_column(String, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     material_selection_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("material_selections.id"), nullable=True)
     prompt_text: Mapped[str] = mapped_column(Text, nullable=False)

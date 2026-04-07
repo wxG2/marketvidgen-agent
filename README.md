@@ -166,7 +166,7 @@ Common settings:
 DATABASE_URL=sqlite+aiosqlite:///./data/vidgen.db
 QWEN_API_KEY=
 QWEN_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-QWEN_OMNI_MODEL=qwen-omni-turbo
+QWEN_OMNI_MODEL=qwen3-omni-flash
 QWEN_TTS_MODEL=qwen3-tts-flash
 
 WAVESPEED_API_KEY=

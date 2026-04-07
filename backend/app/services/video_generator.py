@@ -42,6 +42,19 @@ class VideoGenerator(ABC):
         ...
 
 
+def _validate_reference_image(file_path: str) -> Path:
+    path = Path(file_path)
+    if not path.exists():
+        raise RuntimeError(f"Reference frame not found: {file_path}")
+
+    mime = mimetypes.guess_type(path.name)[0] or ""
+    if not mime.startswith("image/"):
+        raise RuntimeError(
+            f"Reference frame must be an image file, got {path.suffix or 'unknown type'}: {file_path}"
+        )
+    return path
+
+
 class MockVideoGenerator(VideoGenerator):
     """Mock generator that simulates video generation with a delay."""
 
@@ -82,7 +95,7 @@ class Kling3Generator(VideoGenerator):
 
     async def _upload_image(self, file_path: str) -> str:
         """Upload a local image to WaveSpeed media API and return the public URL."""
-        path = Path(file_path)
+        path = _validate_reference_image(file_path)
         mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         file_bytes = path.read_bytes()
 
@@ -204,7 +217,7 @@ class SeedanceGenerator(VideoGenerator):
 
     @staticmethod
     def _file_to_data_url(file_path: str) -> str:
-        path = Path(file_path)
+        path = _validate_reference_image(file_path)
         mime = mimetypes.guess_type(path.name)[0] or "image/jpeg"
         encoded = base64.b64encode(path.read_bytes()).decode("utf-8")
         return f"data:{mime};base64,{encoded}"

@@ -7,7 +7,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -15,7 +15,23 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.models.pipeline import AgentExecution, PipelineRun
 from app.services.usage_service import UsageRecorder
 
+if TYPE_CHECKING:
+    from app.services.agent_memory import AgentMemoryService
+    from app.agents.tool_registry import ToolRegistry
+
 logger = logging.getLogger(__name__)
+
+
+def describe_exception(exc: BaseException) -> str:
+    """Return a human-readable exception message, even for blank transport errors."""
+    message = str(exc).strip()
+    if message:
+        return message
+
+    args = ", ".join(repr(arg) for arg in exc.args if arg not in ("", None))
+    if args:
+        return f"{exc.__class__.__name__}: {args}"
+    return exc.__class__.__name__
 
 
 @dataclass
@@ -26,7 +42,14 @@ class AgentContext:
     db_session_factory: async_sessionmaker
     usage_recorder: UsageRecorder
     artifacts: dict[str, Any] = field(default_factory=dict)
+    task_board: dict[str, Any] = field(default_factory=dict)
+    shared_workspace: dict[str, Any] = field(default_factory=dict)
+    events: list[dict[str, Any]] = field(default_factory=list)
     cancelled: bool = False
+    # Optional extensions (populated by pipeline executors when available)
+    user_id: Optional[str] = None
+    memory_service: Optional["AgentMemoryService"] = None
+    tool_registry: Optional["ToolRegistry"] = None
 
     async def is_cancelled(self) -> bool:
         if self.cancelled:
@@ -36,6 +59,47 @@ class AgentContext:
             run = await session.get(PipelineRun, self.pipeline_run_id)
             self.cancelled = bool(run and run.status == "cancelled")
         return self.cancelled
+
+    async def report_progress(self, exec_id: str, message: str) -> None:
+        """Update the progress_text on an AgentExecution for real-time UI feedback."""
+        async with self.db_session_factory() as session:
+            execution = await session.get(AgentExecution, exec_id)
+            if execution:
+                execution.progress_text = message
+                await session.commit()
+
+    async def save_checkpoint(self) -> None:
+        """Persist current artifacts as a checkpoint snapshot on the PipelineRun.
+
+        Called by pipeline executors after each agent completes so that a
+        restart can resume from the last successful step.
+        """
+        snapshot = json.dumps(self.artifacts, ensure_ascii=False, default=str)
+        async with self.db_session_factory() as session:
+            run = await session.get(PipelineRun, self.pipeline_run_id)
+            if run:
+                run.artifacts_snapshot = snapshot
+                run.updated_at = datetime.now(timezone.utc)
+                await session.commit()
+
+    @classmethod
+    async def restore_checkpoint(
+        cls,
+        pipeline_run_id: str,
+        db_session_factory: async_sessionmaker,
+    ) -> Optional[dict[str, Any]]:
+        """Load the last saved artifacts snapshot for *pipeline_run_id*.
+
+        Returns the artifacts dict, or ``None`` if no checkpoint exists.
+        """
+        async with db_session_factory() as session:
+            run = await session.get(PipelineRun, pipeline_run_id)
+            if run and run.artifacts_snapshot:
+                try:
+                    return json.loads(run.artifacts_snapshot)
+                except json.JSONDecodeError:
+                    return None
+        return None
 
 
 @dataclass
@@ -97,9 +161,10 @@ class BaseAgent(ABC):
             return result
         except Exception as e:
             duration_ms = int((time.monotonic() - start_time) * 1000)
-            error_result = AgentResult(success=False, output_data={}, error=str(e))
+            error_message = describe_exception(e)
+            error_result = AgentResult(success=False, output_data={}, error=error_message)
             await self._record_complete(context, exec_id, error_result, duration_ms)
-            logger.error(f"[{context.trace_id}] Agent '{self.name}' failed: {e}")
+            logger.error(f"[{context.trace_id}] Agent '{self.name}' failed: {error_message}")
             return error_result
 
     async def _update_pipeline_status(self, context: AgentContext, status: str) -> bool:

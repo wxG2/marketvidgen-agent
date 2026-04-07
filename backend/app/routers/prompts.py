@@ -8,11 +8,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
+from app.auth import get_current_user, get_project_for_user
 from app.database import get_db
 from app.models.prompt import PromptMessage, Prompt
 from app.models.material_selection import MaterialSelection
 from app.models.video_analysis import VideoAnalysis
 from app.models.material import Material
+from app.models.user import User
 from app.schemas.prompt import (
     ChatMessageRequest, ChatMessageResponse, PromptResponse,
     PromptUpdateRequest, PromptTemplate, PromptBindingResponse,
@@ -51,24 +53,35 @@ def get_prompt_router(llm: LLMService) -> APIRouter:
         return PROMPT_TEMPLATES
 
     @router.get("/api/projects/{project_id}/chat", response_model=List[ChatMessageResponse])
-    async def get_chat_history(project_id: str, db: AsyncSession = Depends(get_db)):
+    async def get_chat_history(
+        project_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        await get_project_for_user(db, user.id, project_id)
         result = await db.execute(
             select(PromptMessage)
-            .where(PromptMessage.project_id == project_id)
+            .where(PromptMessage.project_id == project_id, PromptMessage.user_id == user.id)
             .order_by(PromptMessage.created_at)
         )
         return list(result.scalars().all())
 
     @router.post("/api/projects/{project_id}/chat")
-    async def send_chat(project_id: str, data: ChatMessageRequest, db: AsyncSession = Depends(get_db)):
-        user_msg = PromptMessage(project_id=project_id, role="user", content=data.content)
+    async def send_chat(
+        project_id: str,
+        data: ChatMessageRequest,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        await get_project_for_user(db, user.id, project_id)
+        user_msg = PromptMessage(project_id=project_id, user_id=user.id, role="user", content=data.content)
         db.add(user_msg)
         await db.commit()
 
         # Build message history
         result = await db.execute(
             select(PromptMessage)
-            .where(PromptMessage.project_id == project_id)
+            .where(PromptMessage.project_id == project_id, PromptMessage.user_id == user.id)
             .order_by(PromptMessage.created_at)
         )
         messages = [{"role": m.role, "content": m.content} for m in result.scalars().all()]
@@ -83,14 +96,19 @@ def get_prompt_router(llm: LLMService) -> APIRouter:
             async with (await get_db().__anext__()) if False else db:
                 pass
             full_response = "".join(collected)
-            assistant_msg = PromptMessage(project_id=project_id, role="assistant", content=full_response)
+            assistant_msg = PromptMessage(project_id=project_id, user_id=user.id, role="assistant", content=full_response)
             db.add(assistant_msg)
             await db.commit()
 
         return EventSourceResponse(event_generator())
 
     @router.post("/api/projects/{project_id}/prompts/generate", response_model=List[PromptResponse])
-    async def generate_prompts(project_id: str, db: AsyncSession = Depends(get_db)):
+    async def generate_prompts(
+        project_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        await get_project_for_user(db, user.id, project_id)
         # Get selections
         sel_result = await db.execute(
             select(MaterialSelection)
@@ -113,7 +131,11 @@ def get_prompt_router(llm: LLMService) -> APIRouter:
         # Get chat history for user intent
         chat_result = await db.execute(
             select(PromptMessage)
-            .where(PromptMessage.project_id == project_id, PromptMessage.role == "user")
+            .where(
+                PromptMessage.project_id == project_id,
+                PromptMessage.user_id == user.id,
+                PromptMessage.role == "user",
+            )
             .order_by(PromptMessage.created_at.desc())
             .limit(1)
         )
@@ -134,6 +156,7 @@ def get_prompt_router(llm: LLMService) -> APIRouter:
         prompts = []
         for g in generated:
             p = Prompt(
+                user_id=user.id,
                 project_id=project_id,
                 material_selection_id=g.get("material_selection_id"),
                 prompt_text=g["prompt_text"],
@@ -146,19 +169,26 @@ def get_prompt_router(llm: LLMService) -> APIRouter:
         return prompts
 
     @router.get("/api/projects/{project_id}/prompts", response_model=List[PromptResponse])
-    async def get_prompts(project_id: str, db: AsyncSession = Depends(get_db)):
+    async def get_prompts(
+        project_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        await get_project_for_user(db, user.id, project_id)
         result = await db.execute(
-            select(Prompt).where(Prompt.project_id == project_id).order_by(Prompt.created_at)
+            select(Prompt).where(Prompt.project_id == project_id, Prompt.user_id == user.id).order_by(Prompt.created_at)
         )
         return list(result.scalars().all())
 
     @router.patch("/api/projects/{project_id}/prompts/{prompt_id}", response_model=PromptResponse)
     async def update_prompt(
         project_id: str, prompt_id: str, data: PromptUpdateRequest,
+        user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db),
     ):
+        await get_project_for_user(db, user.id, project_id)
         prompt = await db.get(Prompt, prompt_id)
-        if not prompt or prompt.project_id != project_id:
+        if not prompt or prompt.project_id != project_id or prompt.user_id != user.id:
             raise HTTPException(404, "Prompt not found")
         prompt.prompt_text = data.prompt_text
         await db.commit()
@@ -166,10 +196,15 @@ def get_prompt_router(llm: LLMService) -> APIRouter:
         return prompt
 
     @router.get("/api/projects/{project_id}/prompt-bindings", response_model=List[PromptBindingResponse])
-    async def get_prompt_bindings(project_id: str, db: AsyncSession = Depends(get_db)):
+    async def get_prompt_bindings(
+        project_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
         """Return prompts with their bound material info."""
+        await get_project_for_user(db, user.id, project_id)
         result = await db.execute(
-            select(Prompt).where(Prompt.project_id == project_id).order_by(Prompt.created_at)
+            select(Prompt).where(Prompt.project_id == project_id, Prompt.user_id == user.id).order_by(Prompt.created_at)
         )
         prompts = list(result.scalars().all())
 

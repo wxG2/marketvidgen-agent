@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
+import PersonalCenterPage from './PersonalCenterPage'
 import { deleteProject, getProjectHistory, getProjectUsage, listProjects } from '../../api/projects'
-import type { Project, ProjectArtifactFile, ProjectHistoryRun, ProjectUsageSummary } from '../../types'
+import type { AuthUser, Project, ProjectArtifactFile, ProjectHistoryRun, ProjectUsageSummary } from '../../types'
 import { useToast } from '../ui/Toast'
 import { ArrowLeft, BarChart3, ChevronDown, ChevronRight, Clapperboard, Cpu, FileAudio2, FileText, Gauge, FolderKanban, MessageSquareQuote, PlayCircle, Trash2 } from 'lucide-react'
 
@@ -14,6 +15,7 @@ const STATUS_LABELS: Record<string, string> = {
 }
 
 const AGENT_LABELS: Record<string, string> = {
+  swarm_lead: 'Swarm Lead',
   orchestrator: '调度 Agent',
   prompt_engineer: '提示词设计 Agent',
   audio_subtitle: '音频字幕 Agent',
@@ -23,11 +25,14 @@ const AGENT_LABELS: Record<string, string> = {
 
 export default function UsageDashboardPage({
   currentProjectId,
+  currentUser,
   onBack,
 }: {
   currentProjectId: string | null
+  currentUser: AuthUser
   onBack: () => void
 }) {
+  const [tab, setTab] = useState<'dashboard' | 'profile'>('dashboard')
   const [projects, setProjects] = useState<Project[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(currentProjectId)
   const [summary, setSummary] = useState<ProjectUsageSummary | null>(null)
@@ -64,11 +69,11 @@ export default function UsageDashboardPage({
   )
 
   return (
-    <div className="h-full flex bg-[linear-gradient(180deg,#f8fafc_0%,#eef2ff_100%)]">
-      <aside className="w-[320px] shrink-0 border-r border-slate-200 bg-white/85 backdrop-blur p-4 overflow-y-auto">
+    <div className="h-full flex bg-[radial-gradient(circle_at_top,_rgba(171,191,125,0.18),_transparent_28%),linear-gradient(180deg,#f8f0e1_0%,#efe3cd_100%)]">
+      <aside className="w-[320px] shrink-0 border-r border-[#d9ccb5] bg-[#fff9ef]/85 backdrop-blur p-4 overflow-y-auto">
         <button
           onClick={onBack}
-          className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100"
+          className="inline-flex items-center gap-2 rounded-full border border-[#d5c4a4] bg-[#f7efdd] px-3 py-1.5 text-sm text-[#6e5a38] hover:bg-[#f1e5ce]"
         >
           <ArrowLeft size={14} />
           返回工作台
@@ -82,8 +87,8 @@ export default function UsageDashboardPage({
                 key={project.id}
                 className={`group relative rounded-2xl border px-4 py-3 transition-colors ${
                   selectedProjectId === project.id
-                    ? 'border-blue-500 bg-blue-50'
-                    : 'border-slate-200 bg-white hover:bg-slate-50'
+                    ? 'border-[#b59a69] bg-[#f6ebd4]'
+                    : 'border-[#e2d6c1] bg-[#fffaf1] hover:bg-[#f7ecd8]'
                 }`}
               >
                 <button
@@ -142,6 +147,25 @@ export default function UsageDashboardPage({
 
       <section className="flex-1 overflow-y-auto p-6">
         <div className="max-w-5xl mx-auto space-y-6">
+          <div className="inline-flex rounded-full bg-white/90 p-1 shadow-sm border border-[#dcccb0]">
+            <button
+              onClick={() => setTab('dashboard')}
+              className={`rounded-full px-4 py-2 text-sm ${tab === 'dashboard' ? 'bg-[#7e9d53] text-white' : 'text-[#7a6747]'}`}
+            >
+              项目仪表盘
+            </button>
+            <button
+              onClick={() => setTab('profile')}
+              className={`rounded-full px-4 py-2 text-sm ${tab === 'profile' ? 'bg-[#7e9d53] text-white' : 'text-[#7a6747]'}`}
+            >
+              个人中心
+            </button>
+          </div>
+
+          {tab === 'profile' ? (
+            <PersonalCenterPage currentUser={currentUser} />
+          ) : (
+            <>
           <div className="rounded-[28px] border border-slate-200 bg-white/90 backdrop-blur p-6 shadow-sm">
             <div className="flex items-start justify-between gap-4">
               <div>
@@ -347,6 +371,8 @@ export default function UsageDashboardPage({
                   })}
                 </div>
               </div>
+            </>
+          )}
             </>
           )}
         </div>

@@ -11,10 +11,9 @@ from app.models.material import Material
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".gif", ".heic", ".heif", ".svg", ".ico", ".avif"}
-VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv", ".m4v", ".3gp"}
 
 
-async def scan_materials(db: AsyncSession, materials_root: str) -> dict:
+async def scan_materials(db: AsyncSession, materials_root: str, user_id: str) -> dict:
     """Scan materials directory and index all files into the database."""
     root = Path(materials_root)
     if not root.exists():
@@ -22,7 +21,11 @@ async def scan_materials(db: AsyncSession, materials_root: str) -> dict:
 
     stats = {"categories": 0, "files": 0, "skipped": 0}
 
-    for category_dir in sorted(root.iterdir()):
+    user_root = root / user_id
+    if not user_root.exists():
+        return {"categories": 0, "files": 0, "skipped": 0}
+
+    for category_dir in sorted(user_root.iterdir()):
         if not category_dir.is_dir() or category_dir.name.startswith("."):
             continue
 
@@ -34,29 +37,24 @@ async def scan_materials(db: AsyncSession, materials_root: str) -> dict:
                 continue
 
             ext = file_path.suffix.lower()
-            if ext in IMAGE_EXTENSIONS:
-                media_type = "image"
-            elif ext in VIDEO_EXTENSIONS:
-                media_type = "video"
-            else:
+            if ext not in IMAGE_EXTENSIONS:
                 stats["skipped"] += 1
                 continue
 
             rel_path = str(file_path.relative_to(root))
 
-            existing = await db.execute(
-                select(Material).where(Material.file_path == rel_path)
-            )
+            existing = await db.execute(select(Material).where(Material.user_id == user_id, Material.file_path == rel_path))
             if existing.scalar_one_or_none():
                 continue
 
             material = Material(
                 id=str(uuid.uuid4()),
+                user_id=user_id,
                 category=category_name,
                 filename=file_path.name,
                 file_path=rel_path,
                 file_size=file_path.stat().st_size,
-                media_type=media_type,
+                media_type="image",
             )
             db.add(material)
             stats["files"] += 1
@@ -70,21 +68,19 @@ def get_media_type(filename: str):
     ext = Path(filename).suffix.lower()
     if ext in IMAGE_EXTENSIONS:
         return "image"
-    if ext in VIDEO_EXTENSIONS:
-        return "video"
     return None
 
 
 async def index_uploaded_file(
-    db: AsyncSession, materials_root: str, category: str, filename: str, content: bytes,
+    db: AsyncSession, materials_root: str, user_id: str, category: str, filename: str, content: bytes,
 ):
-    """Save an uploaded file to materials_root/category/ and index it in the database."""
+    """Save an uploaded image to materials_root/category/ and index it in the database."""
     media_type = get_media_type(filename)
     if media_type is None:
         print(f"[index] Unsupported file type: {filename!r} (ext={Path(filename).suffix.lower()!r})")
         return None
 
-    category_dir = Path(materials_root) / category
+    category_dir = Path(materials_root) / user_id / category
     category_dir.mkdir(parents=True, exist_ok=True)
 
     dest = category_dir / filename
@@ -102,6 +98,7 @@ async def index_uploaded_file(
 
     material = Material(
         id=str(uuid.uuid4()),
+        user_id=user_id,
         category=category,
         filename=dest.name,
         file_path=rel_path,
@@ -112,9 +109,10 @@ async def index_uploaded_file(
     return material
 
 
-async def get_categories(db: AsyncSession) -> list[dict]:
+async def get_categories(db: AsyncSession, user_id: str) -> list[dict]:
     result = await db.execute(
         select(Material.category, func.count(Material.id))
+        .where(Material.user_id == user_id, Material.media_type == "image")
         .group_by(Material.category)
         .order_by(Material.category)
     )
@@ -122,16 +120,24 @@ async def get_categories(db: AsyncSession) -> list[dict]:
 
 
 async def get_materials_by_category(
-    db: AsyncSession, category: str, page: int = 1, page_size: int = 50
+    db: AsyncSession, user_id: str, category: str, page: int = 1, page_size: int = 50
 ) -> tuple[list[Material], int]:
     count_result = await db.execute(
-        select(func.count(Material.id)).where(Material.category == category)
+        select(func.count(Material.id)).where(
+            Material.user_id == user_id,
+            Material.category == category,
+            Material.media_type == "image",
+        )
     )
     total = count_result.scalar() or 0
 
     result = await db.execute(
         select(Material)
-        .where(Material.category == category)
+        .where(
+            Material.user_id == user_id,
+            Material.category == category,
+            Material.media_type == "image",
+        )
         .order_by(Material.filename)
         .offset((page - 1) * page_size)
         .limit(page_size)
@@ -140,10 +146,10 @@ async def get_materials_by_category(
     return materials, total
 
 
-async def delete_material(db: AsyncSession, materials_root: str, material_id: str) -> bool:
+async def delete_material(db: AsyncSession, materials_root: str, user_id: str, material_id: str) -> bool:
     """Delete a single material record and its file from disk."""
     material = await db.get(Material, material_id)
-    if not material:
+    if not material or material.user_id != user_id:
         return False
 
     # Delete file from disk
@@ -162,10 +168,10 @@ async def delete_material(db: AsyncSession, materials_root: str, material_id: st
     return True
 
 
-async def delete_category(db: AsyncSession, materials_root: str, category: str) -> int:
+async def delete_category(db: AsyncSession, materials_root: str, user_id: str, category: str) -> int:
     """Delete all materials in a category and remove the directory. Returns count deleted."""
     result = await db.execute(
-        select(Material).where(Material.category == category)
+        select(Material).where(Material.user_id == user_id, Material.category == category)
     )
     materials = list(result.scalars().all())
 

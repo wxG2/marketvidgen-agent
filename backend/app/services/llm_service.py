@@ -4,7 +4,7 @@ import asyncio
 import json
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from app.prompts import GENERIC_PROMPT_GENERATION_SYSTEM_PROMPT
 from app.services.qwen_client import QwenClient
@@ -27,7 +27,26 @@ class LLMService(ABC):
         user_prompt: str,
         schema: dict[str, Any],
         image_paths: Optional[list[str]] = None,
+        video_paths: Optional[list[str]] = None,
     ) -> tuple[dict[str, Any], dict[str, int]]:
+        ...
+
+    @abstractmethod
+    async def generate_with_tools(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        schema: dict[str, Any],
+        tools: list[dict[str, Any]],
+        tool_executor: Callable[[str, dict], Awaitable[tuple[str, list[str]]]],
+        image_paths: Optional[list[str]] = None,
+        video_paths: Optional[list[str]] = None,
+    ) -> tuple[dict[str, Any], list[dict], dict[str, int]]:
+        """LLM call with function calling / tool use support.
+
+        Returns (parsed_json, tool_call_log, usage).
+        """
         ...
 
 
@@ -68,9 +87,64 @@ class MockLLMService(LLMService):
         user_prompt: str,
         schema: dict[str, Any],
         image_paths: Optional[list[str]] = None,
+        video_paths: Optional[list[str]] = None,
     ) -> tuple[dict[str, Any], dict[str, int]]:
         await asyncio.sleep(0.2)
         return {}, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    async def generate_with_tools(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        schema: dict[str, Any],
+        tools: list[dict[str, Any]],
+        tool_executor: Callable[[str, dict], Awaitable[tuple[str, list[str]]]],
+        image_paths: Optional[list[str]] = None,
+        video_paths: Optional[list[str]] = None,
+    ) -> tuple[dict[str, Any], list[dict], dict[str, int]]:
+        await asyncio.sleep(0.3)
+        # Return a mock replication plan
+        mock_plan = {
+            "video_summary": "参考视频包含 3 个镜头，展示了商业空间的外观和内部环境",
+            "overall_style": "商业宣传",
+            "color_palette": "暖色调",
+            "pacing": "中等节奏",
+            "shots": [
+                {
+                    "shot_idx": 0,
+                    "description": "建筑外观全景，暖色调光线",
+                    "reference_frame_path": "/mock/keyframes/frame_0000.jpg",
+                    "timestamp_range": [0.0, 5.0],
+                    "camera_movement": "缓慢推进",
+                    "color_tone": "暖金色",
+                    "subjects": ["建筑外观"],
+                    "suggested_duration_seconds": 5,
+                },
+                {
+                    "shot_idx": 1,
+                    "description": "室内环境中景，柔和灯光",
+                    "reference_frame_path": "/mock/keyframes/frame_0001.jpg",
+                    "timestamp_range": [5.0, 10.0],
+                    "camera_movement": "平移",
+                    "color_tone": "柔和白光",
+                    "subjects": ["室内空间"],
+                    "suggested_duration_seconds": 5,
+                },
+                {
+                    "shot_idx": 2,
+                    "description": "产品特写，浅景深",
+                    "reference_frame_path": "/mock/keyframes/frame_0002.jpg",
+                    "timestamp_range": [10.0, 15.0],
+                    "camera_movement": "缓慢推入",
+                    "color_tone": "暖色调",
+                    "subjects": ["产品细节"],
+                    "suggested_duration_seconds": 5,
+                },
+            ],
+        }
+        mock_tool_log = [{"tool": "extract_keyframes", "args": {"strategy": "scene_change", "max_frames": 10}}]
+        return mock_plan, mock_tool_log, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     def _generate_prompt_for_category(self, category: str, summary: str) -> str:
         templates = {
@@ -127,10 +201,33 @@ class RealLLMService(LLMService):
         user_prompt: str,
         schema: dict[str, Any],
         image_paths: Optional[list[str]] = None,
+        video_paths: Optional[list[str]] = None,
     ) -> tuple[dict[str, Any], dict[str, int]]:
         return await self.client.chat_json(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             response_schema=schema,
             image_paths=image_paths,
+            video_paths=video_paths,
+        )
+
+    async def generate_with_tools(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        schema: dict[str, Any],
+        tools: list[dict[str, Any]],
+        tool_executor: Callable[[str, dict], Awaitable[tuple[str, list[str]]]],
+        image_paths: Optional[list[str]] = None,
+        video_paths: Optional[list[str]] = None,
+    ) -> tuple[dict[str, Any], list[dict], dict[str, int]]:
+        return await self.client.chat_with_tools(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            tools=tools,
+            tool_executor=tool_executor,
+            image_paths=image_paths,
+            video_paths=video_paths,
+            response_schema=schema,
         )

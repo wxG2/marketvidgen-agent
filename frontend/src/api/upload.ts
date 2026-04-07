@@ -1,10 +1,16 @@
 import api from './client'
 import type { VideoUpload } from '../types'
 
-export const uploadVideo = (projectId: string, file: File, onProgress?: (pct: number) => void) =>
+export const uploadVideo = (
+  projectId: string,
+  file: File,
+  onProgress?: (pct: number) => void,
+  sessionId?: string | null,
+) =>
   api.post<VideoUpload>(`/api/projects/${projectId}/upload`, (() => {
     const fd = new FormData()
     fd.append('file', file)
+    if (sessionId) fd.append('session_id', sessionId)
     return fd
   })(), {
     headers: { 'Content-Type': 'multipart/form-data' },

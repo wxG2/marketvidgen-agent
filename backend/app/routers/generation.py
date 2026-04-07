@@ -11,12 +11,14 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import get_current_user, get_project_for_user
 from app.config import settings
 from app.database import get_db, async_session
 from app.models.prompt import Prompt
 from app.models.material import Material
 from app.models.material_selection import MaterialSelection
 from app.models.generated_video import GeneratedVideo
+from app.models.user import User
 from app.schemas.generation import GeneratedVideoResponse
 from app.services.video_generator import VideoGenerator
 
@@ -26,7 +28,12 @@ router = APIRouter(tags=["generation"])
 def get_generation_router(generator: VideoGenerator) -> APIRouter:
 
     @router.post("/api/projects/{project_id}/generate", response_model=List[GeneratedVideoResponse])
-    async def start_generation(project_id: str, db: AsyncSession = Depends(get_db)):
+    async def start_generation(
+        project_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        await get_project_for_user(db, user.id, project_id)
         prompt_result = await db.execute(
             select(Prompt).where(Prompt.project_id == project_id).order_by(Prompt.created_at)
         )
@@ -75,7 +82,12 @@ def get_generation_router(generator: VideoGenerator) -> APIRouter:
         return responses
 
     @router.get("/api/projects/{project_id}/generations", response_model=List[GeneratedVideoResponse])
-    async def get_generations(project_id: str, db: AsyncSession = Depends(get_db)):
+    async def get_generations(
+        project_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        await get_project_for_user(db, user.id, project_id)
         result = await db.execute(
             select(GeneratedVideo)
             .where(GeneratedVideo.project_id == project_id)
@@ -87,7 +99,13 @@ def get_generation_router(generator: VideoGenerator) -> APIRouter:
         return responses
 
     @router.post("/api/projects/{project_id}/generations/{gen_id}/select")
-    async def select_video(project_id: str, gen_id: str, db: AsyncSession = Depends(get_db)):
+    async def select_video(
+        project_id: str,
+        gen_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        await get_project_for_user(db, user.id, project_id)
         video = await db.get(GeneratedVideo, gen_id)
         if not video or video.project_id != project_id:
             raise HTTPException(404, "Video not found")
@@ -96,7 +114,13 @@ def get_generation_router(generator: VideoGenerator) -> APIRouter:
         return {"ok": True}
 
     @router.post("/api/projects/{project_id}/generations/{gen_id}/deselect")
-    async def deselect_video(project_id: str, gen_id: str, db: AsyncSession = Depends(get_db)):
+    async def deselect_video(
+        project_id: str,
+        gen_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        await get_project_for_user(db, user.id, project_id)
         video = await db.get(GeneratedVideo, gen_id)
         if not video or video.project_id != project_id:
             raise HTTPException(404, "Video not found")
@@ -105,7 +129,12 @@ def get_generation_router(generator: VideoGenerator) -> APIRouter:
         return {"ok": True}
 
     @router.get("/api/projects/{project_id}/selected-videos", response_model=List[GeneratedVideoResponse])
-    async def get_selected_videos(project_id: str, db: AsyncSession = Depends(get_db)):
+    async def get_selected_videos(
+        project_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        await get_project_for_user(db, user.id, project_id)
         result = await db.execute(
             select(GeneratedVideo)
             .where(GeneratedVideo.project_id == project_id, GeneratedVideo.is_selected == True)
@@ -117,8 +146,14 @@ def get_generation_router(generator: VideoGenerator) -> APIRouter:
         return responses
 
     @router.post("/api/projects/{project_id}/generate-single/{prompt_id}", response_model=GeneratedVideoResponse)
-    async def generate_single(project_id: str, prompt_id: str, db: AsyncSession = Depends(get_db)):
+    async def generate_single(
+        project_id: str,
+        prompt_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
         """Generate video for a single prompt binding."""
+        await get_project_for_user(db, user.id, project_id)
         prompt = await db.get(Prompt, prompt_id)
         if not prompt or prompt.project_id != project_id:
             raise HTTPException(404, "Prompt not found")
@@ -153,10 +188,15 @@ def get_generation_router(generator: VideoGenerator) -> APIRouter:
         return await _to_response_with_binding(gen_video, db)
 
     @router.get("/api/generations/{gen_id}/video")
-    async def stream_generated_video(gen_id: str, db: AsyncSession = Depends(get_db)):
+    async def stream_generated_video(
+        gen_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
         video = await db.get(GeneratedVideo, gen_id)
         if not video or not video.video_path or not os.path.exists(video.video_path):
             raise HTTPException(404, "Video file not found")
+        await get_project_for_user(db, user.id, video.project_id)
         return FileResponse(video.video_path, media_type="video/mp4")
 
     return router

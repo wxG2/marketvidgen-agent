@@ -4,6 +4,7 @@ import { getSelectedMaterials } from '../../api/materials'
 import type { PromptTemplate, ChatMessage, Prompt, MaterialSelection } from '../../types'
 import { Send, Loader2, Wand2, Edit3, Check, MessageSquare, Image as ImageIcon, X } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import CapyAvatar from '../ui/CapyAvatar'
 
 interface Props {
   projectId: string
@@ -230,19 +231,25 @@ export default function PromptWorkspace({ projectId }: Props) {
           )}
           {messages.map((msg) => (
             <div key={msg.id} className={cn('flex', msg.role === 'user' ? 'justify-end' : 'justify-start')}>
-              <div className={cn(
-                'max-w-[80%] rounded-xl px-4 py-2.5 text-sm whitespace-pre-wrap',
-                msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700',
-              )}>
-                {renderMessageContent(msg.content)}
+              <div className={cn('flex items-start gap-3', msg.role === 'user' && 'flex-row-reverse')}>
+                {msg.role === 'assistant' && <CapyAvatar size="sm" className="mt-0.5 shrink-0" />}
+                <div className={cn(
+                  'max-w-[80%] rounded-xl px-4 py-2.5 text-sm whitespace-pre-wrap',
+                  msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700',
+                )}>
+                  {renderMessageContent(msg.content)}
+                </div>
               </div>
             </div>
           ))}
           {streaming && streamText && (
             <div className="flex justify-start">
-              <div className="max-w-[80%] rounded-xl px-4 py-2.5 text-sm bg-gray-100 text-gray-700 whitespace-pre-wrap">
-                {streamText}
-                <span className="inline-block w-1.5 h-4 bg-blue-500 ml-0.5 animate-pulse" />
+              <div className="flex items-start gap-3">
+                <CapyAvatar size="sm" className="mt-0.5 shrink-0" />
+                <div className="max-w-[80%] rounded-xl px-4 py-2.5 text-sm bg-gray-100 text-gray-700 whitespace-pre-wrap">
+                  {streamText}
+                  <span className="inline-block w-1.5 h-4 bg-blue-500 ml-0.5 animate-pulse" />
+                </div>
               </div>
             </div>
           )}

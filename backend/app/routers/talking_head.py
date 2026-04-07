@@ -11,12 +11,14 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import get_current_user, get_project_for_user
 from app.config import settings
 from app.database import get_db, async_session
 from app.models.model_image import ModelImage
 from app.models.talking_head import TalkingHeadTask
 from app.models.generated_video import GeneratedVideo
 from app.models.material import Material
+from app.models.user import User
 from app.schemas.talking_head import (
     ModelImageResponse,
     TalkingHeadCreate,
@@ -40,8 +42,10 @@ def get_talking_head_router(compositor: ImageCompositor, lipsync: LipSyncGenerat
     async def upload_model_image(
         project_id: str,
         file: UploadFile = File(...),
+        user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db),
     ):
+        await get_project_for_user(db, user.id, project_id)
         upload_dir = os.path.join(settings.UPLOAD_DIR, "model_images", project_id)
         os.makedirs(upload_dir, exist_ok=True)
 
@@ -68,7 +72,12 @@ def get_talking_head_router(compositor: ImageCompositor, lipsync: LipSyncGenerat
         return _model_image_response(model_img)
 
     @router.get("/api/projects/{project_id}/model-images", response_model=List[ModelImageResponse])
-    async def list_model_images(project_id: str, db: AsyncSession = Depends(get_db)):
+    async def list_model_images(
+        project_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        await get_project_for_user(db, user.id, project_id)
         result = await db.execute(
             select(ModelImage)
             .where(ModelImage.project_id == project_id)
@@ -77,10 +86,15 @@ def get_talking_head_router(compositor: ImageCompositor, lipsync: LipSyncGenerat
         return [_model_image_response(img) for img in result.scalars().all()]
 
     @router.delete("/api/model-images/{image_id}")
-    async def delete_model_image(image_id: str, db: AsyncSession = Depends(get_db)):
+    async def delete_model_image(
+        image_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
         img = await db.get(ModelImage, image_id)
         if not img:
             raise HTTPException(404, "Model image not found")
+        await get_project_for_user(db, user.id, img.project_id)
         if img.file_path and os.path.exists(img.file_path):
             os.remove(img.file_path)
         await db.delete(img)
@@ -88,10 +102,15 @@ def get_talking_head_router(compositor: ImageCompositor, lipsync: LipSyncGenerat
         return {"ok": True}
 
     @router.get("/api/model-images/{image_id}/file")
-    async def get_model_image_file(image_id: str, db: AsyncSession = Depends(get_db)):
+    async def get_model_image_file(
+        image_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
         img = await db.get(ModelImage, image_id)
         if not img or not img.file_path or not os.path.exists(img.file_path):
             raise HTTPException(404, "Image file not found")
+        await get_project_for_user(db, user.id, img.project_id)
         return FileResponse(img.file_path)
 
     # ── Audio upload endpoints ─────────────────────────────────────────
@@ -100,9 +119,11 @@ def get_talking_head_router(compositor: ImageCompositor, lipsync: LipSyncGenerat
     async def upload_audio(
         project_id: str,
         file: UploadFile = File(...),
+        user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db),
     ):
-        upload_dir = os.path.join(settings.UPLOAD_DIR, "talking_head_audio", project_id)
+        await get_project_for_user(db, user.id, project_id)
+        upload_dir = os.path.join(settings.UPLOAD_DIR, "talking_head_audio", user.id, project_id)
         os.makedirs(upload_dir, exist_ok=True)
 
         file_id = str(uuid.uuid4())
@@ -119,6 +140,7 @@ def get_talking_head_router(compositor: ImageCompositor, lipsync: LipSyncGenerat
         _audio_files[file_id] = {
             "path": saved_path,
             "filename": file.filename or saved_name,
+            "user_id": user.id,
         }
 
         return {
@@ -129,10 +151,12 @@ def get_talking_head_router(compositor: ImageCompositor, lipsync: LipSyncGenerat
         }
 
     @router.get("/api/talking-head-audio/{audio_id}/file")
-    async def get_audio_file(audio_id: str):
+    async def get_audio_file(
+        audio_id: str,
+        user: User = Depends(get_current_user),
+    ):
         info = _audio_files.get(audio_id)
-        if not info or not os.path.exists(info["path"]):
-            # Try to find on disk by scanning
+        if not info or info.get("user_id") != user.id or not os.path.exists(info["path"]):
             raise HTTPException(404, "Audio file not found")
         return FileResponse(info["path"])
 
@@ -142,8 +166,10 @@ def get_talking_head_router(compositor: ImageCompositor, lipsync: LipSyncGenerat
     async def create_talking_head_task(
         project_id: str,
         body: TalkingHeadCreate,
+        user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db),
     ):
+        await get_project_for_user(db, user.id, project_id)
         # Validate model image exists
         model_img = await db.get(ModelImage, body.model_image_id)
         if not model_img or model_img.project_id != project_id:
@@ -165,7 +191,12 @@ def get_talking_head_router(compositor: ImageCompositor, lipsync: LipSyncGenerat
         return await _task_response(task, db)
 
     @router.get("/api/projects/{project_id}/talking-head", response_model=List[TalkingHeadResponse])
-    async def list_talking_head_tasks(project_id: str, db: AsyncSession = Depends(get_db)):
+    async def list_talking_head_tasks(
+        project_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        await get_project_for_user(db, user.id, project_id)
         result = await db.execute(
             select(TalkingHeadTask)
             .where(TalkingHeadTask.project_id == project_id)
@@ -177,19 +208,29 @@ def get_talking_head_router(compositor: ImageCompositor, lipsync: LipSyncGenerat
         return responses
 
     @router.get("/api/talking-head/{task_id}", response_model=TalkingHeadResponse)
-    async def get_talking_head_task(task_id: str, db: AsyncSession = Depends(get_db)):
+    async def get_talking_head_task(
+        task_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
         task = await db.get(TalkingHeadTask, task_id)
         if not task:
             raise HTTPException(404, "Task not found")
+        await get_project_for_user(db, user.id, task.project_id)
         return await _task_response(task, db)
 
     # ── Step B: Trigger composite ──────────────────────────────────────
 
     @router.post("/api/talking-head/{task_id}/composite", response_model=TalkingHeadResponse)
-    async def trigger_composite(task_id: str, db: AsyncSession = Depends(get_db)):
+    async def trigger_composite(
+        task_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
         task = await db.get(TalkingHeadTask, task_id)
         if not task:
             raise HTTPException(404, "Task not found")
+        await get_project_for_user(db, user.id, task.project_id)
 
         model_img = await db.get(ModelImage, task.model_image_id)
         if not model_img:
@@ -217,10 +258,15 @@ def get_talking_head_router(compositor: ImageCompositor, lipsync: LipSyncGenerat
         return await _task_response(task, db)
 
     @router.get("/api/talking-head/{task_id}/composite-preview")
-    async def get_composite_preview(task_id: str, db: AsyncSession = Depends(get_db)):
+    async def get_composite_preview(
+        task_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
         task = await db.get(TalkingHeadTask, task_id)
         if not task or not task.composite_image_path or not os.path.exists(task.composite_image_path):
             raise HTTPException(404, "Composite image not found")
+        await get_project_for_user(db, user.id, task.project_id)
         return FileResponse(task.composite_image_path)
 
     # ── Step C: Update prompt & audio ──────────────────────────────────
@@ -229,11 +275,13 @@ def get_talking_head_router(compositor: ImageCompositor, lipsync: LipSyncGenerat
     async def update_prompt_and_audio(
         task_id: str,
         body: TalkingHeadPromptUpdate,
+        user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db),
     ):
         task = await db.get(TalkingHeadTask, task_id)
         if not task:
             raise HTTPException(404, "Task not found")
+        await get_project_for_user(db, user.id, task.project_id)
 
         if body.motion_prompt is not None:
             task.motion_prompt = body.motion_prompt
@@ -251,10 +299,15 @@ def get_talking_head_router(compositor: ImageCompositor, lipsync: LipSyncGenerat
     # ── Step D: Trigger LipSync generation ─────────────────────────────
 
     @router.post("/api/talking-head/{task_id}/generate", response_model=TalkingHeadResponse)
-    async def trigger_lipsync(task_id: str, db: AsyncSession = Depends(get_db)):
+    async def trigger_lipsync(
+        task_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
         task = await db.get(TalkingHeadTask, task_id)
         if not task:
             raise HTTPException(404, "Task not found")
+        await get_project_for_user(db, user.id, task.project_id)
 
         # Use composite image if available, otherwise use original model image
         image_path = task.composite_image_path
@@ -282,10 +335,15 @@ def get_talking_head_router(compositor: ImageCompositor, lipsync: LipSyncGenerat
         return await _task_response(task, db)
 
     @router.get("/api/talking-head/{task_id}/video")
-    async def get_talking_head_video(task_id: str, db: AsyncSession = Depends(get_db)):
+    async def get_talking_head_video(
+        task_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
         task = await db.get(TalkingHeadTask, task_id)
         if not task or not task.video_path or not os.path.exists(task.video_path):
             raise HTTPException(404, "Video file not found")
+        await get_project_for_user(db, user.id, task.project_id)
         return FileResponse(task.video_path, media_type="video/mp4")
 
     return router

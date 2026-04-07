@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import os
 import uuid
 from abc import ABC, abstractmethod
@@ -9,6 +11,9 @@ from pathlib import Path
 from typing import Optional
 
 from app.prompts import VIDEO_EDITOR_SYSTEM_PROMPT
+
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class ComposeResult:
@@ -69,13 +74,13 @@ class RealVideoEditorService(VideoEditorService):
         output_path: str,
         context_data: dict | None = None,
     ) -> ComposeResult:
-        import os
         import tempfile
-        from pathlib import Path
 
         from app.services.media_utils import ensure_local_file, run_subprocess
 
-        context_data = context_data or {}
+        if not isinstance(context_data, dict):
+            logger.warning("video_editor received non-dict context_data (%s), fallback to empty context", type(context_data).__name__)
+            context_data = {}
         shot_prompts = context_data.get("shot_prompts", [])
         duration_mode = context_data.get("duration_mode", "fixed")
         shot_durations = context_data.get("shot_durations", [])
@@ -101,16 +106,18 @@ class RealVideoEditorService(VideoEditorService):
                         "items": {"type": "integer"},
                     }
                 },
-                "required": ["ordered_indices"],
+                "required": ["ordered_indices"], # 返回视频剪辑的最终顺序
             },
         }
         video_clips_data = context_data.get("video_clips_data", [])
         clip_context = []
         for idx, clip in enumerate(video_clips_data):
-            prompt = shot_prompts[idx] if idx < len(shot_prompts) else {}
+            clip_item = clip if isinstance(clip, dict) else {}
+            prompt_raw = shot_prompts[idx] if idx < len(shot_prompts) else {}
+            prompt = prompt_raw if isinstance(prompt_raw, dict) else {}
             clip_context.append(
                 {
-                    "shot_idx": clip.get("shot_idx", idx),
+                    "shot_idx": clip_item.get("shot_idx", idx),
                     "prompt": prompt.get("video_prompt", ""),
                     "script_segment": prompt.get("script_segment", ""),
                     "subtitle_text": subtitle_segments[idx]["text"] if idx < len(subtitle_segments) else "",
@@ -124,8 +131,9 @@ class RealVideoEditorService(VideoEditorService):
             user_prompt=str({"clips": clip_context, "subtitle_segments": subtitle_segments}),
             schema=schema,
         )
-        ordered_indices = plan.get("ordered_indices") or list(range(len(video_clips)))
+        ordered_indices = _extract_ordered_indices(plan, len(video_clips))
         if sorted(ordered_indices) != list(range(len(video_clips))):
+            logger.warning("video_editor got invalid ordered_indices=%s, fallback to default order", ordered_indices)
             ordered_indices = list(range(len(video_clips)))
 
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -360,6 +368,40 @@ class RealVideoEditorService(VideoEditorService):
                     os.remove(path)
                 except OSError:
                     pass
+
+
+def _extract_ordered_indices(plan: object, clip_count: int) -> list[int]:
+    """Robustly parse ordered_indices from LLM output.
+
+    The schema expects {"ordered_indices": [...]}, but some models may still
+    return a bare list in edge cases. We normalize both forms.
+    """
+    default = list(range(clip_count))
+    candidate: object = None
+
+    if isinstance(plan, dict):
+        candidate = plan.get("ordered_indices")
+    elif isinstance(plan, list):
+        candidate = plan
+    elif isinstance(plan, str):
+        try:
+            parsed = json.loads(plan)
+        except json.JSONDecodeError:
+            return default
+        return _extract_ordered_indices(parsed, clip_count)
+    else:
+        return default
+
+    if not isinstance(candidate, list):
+        return default
+
+    normalized: list[int] = []
+    for item in candidate:
+        try:
+            normalized.append(int(item))
+        except (TypeError, ValueError):
+            return default
+    return normalized
 
 
 async def _probe_duration(ffmpeg_bin: str, file_path: str, run_subprocess) -> float | None:

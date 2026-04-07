@@ -14,6 +14,7 @@ class VideoUpload(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     project_id: Mapped[str] = mapped_column(String, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    session_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("auto_chat_sessions.id", ondelete="SET NULL"), index=True, nullable=True)
     filename: Mapped[str] = mapped_column(String, nullable=False)
     file_path: Mapped[str] = mapped_column(String, nullable=False)
     file_size: Mapped[int] = mapped_column(Integer, nullable=False)

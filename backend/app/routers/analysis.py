@@ -6,10 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import get_current_user, get_project_for_user
 from app.database import get_db, async_session
 from app.models.video_upload import VideoUpload
 from app.models.video_analysis import VideoAnalysis
-from app.models.project import Project
+from app.models.user import User
 from app.schemas.video import VideoAnalysisResponse
 from app.services.video_analyzer import VideoAnalyzer
 
@@ -44,11 +45,10 @@ def get_analysis_router(analyzer: VideoAnalyzer) -> APIRouter:
     async def trigger_analysis(
         project_id: str,
         background_tasks: BackgroundTasks,
+        user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db),
     ):
-        project = await db.get(Project, project_id)
-        if not project:
-            raise HTTPException(404, "Project not found")
+        await get_project_for_user(db, user.id, project_id)
 
         upload_result = await db.execute(
             select(VideoUpload).where(VideoUpload.project_id == project_id).order_by(VideoUpload.created_at.desc()).limit(1)
@@ -59,7 +59,7 @@ def get_analysis_router(analyzer: VideoAnalyzer) -> APIRouter:
 
         # Get available categories
         from app.services.material_service import get_categories
-        cats = await get_categories(db)
+        cats = await get_categories(db, user.id)
         category_names = [c["name"] for c in cats]
 
         analysis = VideoAnalysis(project_id=project_id, video_upload_id=upload.id)
@@ -71,7 +71,12 @@ def get_analysis_router(analyzer: VideoAnalyzer) -> APIRouter:
         return _to_response(analysis)
 
     @router.get("/api/projects/{project_id}/analysis", response_model=VideoAnalysisResponse)
-    async def get_analysis(project_id: str, db: AsyncSession = Depends(get_db)):
+    async def get_analysis(
+        project_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        await get_project_for_user(db, user.id, project_id)
         result = await db.execute(
             select(VideoAnalysis)
             .where(VideoAnalysis.project_id == project_id)

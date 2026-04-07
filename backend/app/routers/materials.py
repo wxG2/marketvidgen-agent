@@ -11,10 +11,12 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import get_current_user, get_material_for_user, get_project_for_user
 from app.config import settings
 from app.database import get_db
 from app.models.material import Material
 from app.models.material_selection import MaterialSelection
+from app.models.user import User
 from app.schemas.material import (
     MaterialResponse, CategoryResponse, MaterialSelectRequest,
     MaterialSelectionResponse, MaterialsPageResponse, MaterialUploadResponse,
@@ -28,8 +30,11 @@ router = APIRouter(tags=["materials"])
 
 
 @router.post("/api/materials/scan")
-async def trigger_scan(db: AsyncSession = Depends(get_db)):
-    stats = await scan_materials(db, settings.MATERIALS_ROOT)
+async def trigger_scan(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    stats = await scan_materials(db, settings.MATERIALS_ROOT, user.id)
     return stats
 
 
@@ -37,6 +42,7 @@ async def trigger_scan(db: AsyncSession = Depends(get_db)):
 async def upload_materials(
     files: List[UploadFile] = File(...),
     paths: str = Form(None),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload material files with optional relative paths."""
@@ -71,7 +77,7 @@ async def upload_materials(
 
             print(f"[upload] file {i}: raw_filename={raw_filename!r}, filename={filename!r}, category={category!r}, size={len(content)}")
 
-            material = await index_uploaded_file(db, settings.MATERIALS_ROOT, category, filename, content)
+            material = await index_uploaded_file(db, settings.MATERIALS_ROOT, user.id, category, filename, content)
             if material:
                 stats["files"] += 1
                 stats["categories_set"].add(category)
@@ -99,8 +105,10 @@ async def upload_project_materials(
     files: List[UploadFile] = File(...),
     paths: str = Form(None),
     auto_select: bool = Form(True),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await get_project_for_user(db, user.id, project_id)
     try:
         path_list = json.loads(paths) if paths else []
     except (json.JSONDecodeError, TypeError):
@@ -130,7 +138,7 @@ async def upload_project_materials(
             content = await file.read()
             raw_filename = file.filename or f"file_{i}"
             filename = PurePosixPath(raw_filename).name or raw_filename
-            material = await index_uploaded_file(db, settings.MATERIALS_ROOT, category, filename, content)
+            material = await index_uploaded_file(db, settings.MATERIALS_ROOT, user.id, category, filename, content)
             if not material:
                 stats["skipped"] += 1
                 continue
@@ -176,8 +184,11 @@ async def upload_project_materials(
 
 
 @router.get("/api/materials/categories", response_model=List[CategoryResponse])
-async def list_categories(db: AsyncSession = Depends(get_db)):
-    return await get_categories(db)
+async def list_categories(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return await get_categories(db, user.id)
 
 
 @router.get("/api/materials", response_model=MaterialsPageResponse)
@@ -185,9 +196,10 @@ async def list_materials(
     category: str = Query(...),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    materials, total = await get_materials_by_category(db, category, page, page_size)
+    materials, total = await get_materials_by_category(db, user.id, category, page, page_size)
     items = []
     for m in materials:
         items.append({
@@ -204,28 +216,38 @@ async def list_materials(
 
 
 @router.delete("/api/materials/categories/{category}")
-async def remove_category(category: str, db: AsyncSession = Depends(get_db)):
+async def remove_category(
+    category: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """Delete all materials in a category."""
-    count = await delete_category(db, settings.MATERIALS_ROOT, category)
+    count = await delete_category(db, settings.MATERIALS_ROOT, user.id, category)
     if count == 0:
         raise HTTPException(404, "Category not found or empty")
     return {"ok": True, "deleted": count}
 
 
 @router.delete("/api/materials/{material_id}")
-async def remove_material(material_id: str, db: AsyncSession = Depends(get_db)):
+async def remove_material(
+    material_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """Delete a single material and its file."""
-    deleted = await delete_material(db, settings.MATERIALS_ROOT, material_id)
+    deleted = await delete_material(db, settings.MATERIALS_ROOT, user.id, material_id)
     if not deleted:
         raise HTTPException(404, "Material not found")
     return {"ok": True}
 
 
 @router.get("/api/materials/{material_id}/thumbnail")
-async def get_thumbnail(material_id: str, db: AsyncSession = Depends(get_db)):
-    material = await db.get(Material, material_id)
-    if not material:
-        raise HTTPException(404, "Material not found")
+async def get_thumbnail(
+    material_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    material = await get_material_for_user(db, user.id, material_id)
     file_path = os.path.join(settings.MATERIALS_ROOT, material.file_path)
     if not os.path.exists(file_path):
         raise HTTPException(404, "File not found")
@@ -233,10 +255,12 @@ async def get_thumbnail(material_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/api/materials/{material_id}/preview")
-async def get_preview(material_id: str, db: AsyncSession = Depends(get_db)):
-    material = await db.get(Material, material_id)
-    if not material:
-        raise HTTPException(404, "Material not found")
+async def get_preview(
+    material_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    material = await get_material_for_user(db, user.id, material_id)
     file_path = os.path.join(settings.MATERIALS_ROOT, material.file_path)
     if not os.path.exists(file_path):
         raise HTTPException(404, "File not found")
@@ -246,11 +270,13 @@ async def get_preview(material_id: str, db: AsyncSession = Depends(get_db)):
 # Selection endpoints
 @router.post("/api/projects/{project_id}/materials/select", response_model=MaterialSelectionResponse)
 async def select_material(
-    project_id: str, data: MaterialSelectRequest, db: AsyncSession = Depends(get_db),
+    project_id: str,
+    data: MaterialSelectRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    material = await db.get(Material, data.material_id)
-    if not material:
-        raise HTTPException(404, "Material not found")
+    await get_project_for_user(db, user.id, project_id)
+    material = await get_material_for_user(db, user.id, data.material_id)
 
     existing = await db.execute(
         select(MaterialSelection).where(
@@ -274,7 +300,13 @@ async def select_material(
 
 
 @router.delete("/api/projects/{project_id}/materials/select/{material_id}")
-async def deselect_material(project_id: str, material_id: str, db: AsyncSession = Depends(get_db)):
+async def deselect_material(
+    project_id: str,
+    material_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await get_project_for_user(db, user.id, project_id)
     await db.execute(
         delete(MaterialSelection).where(
             MaterialSelection.project_id == project_id,
@@ -286,7 +318,12 @@ async def deselect_material(project_id: str, material_id: str, db: AsyncSession 
 
 
 @router.get("/api/projects/{project_id}/materials/selected", response_model=List[MaterialSelectionResponse])
-async def get_selected(project_id: str, db: AsyncSession = Depends(get_db)):
+async def get_selected(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await get_project_for_user(db, user.id, project_id)
     result = await db.execute(
         select(MaterialSelection)
         .where(MaterialSelection.project_id == project_id)
@@ -296,6 +333,8 @@ async def get_selected(project_id: str, db: AsyncSession = Depends(get_db)):
     responses = []
     for sel in selections:
         material = await db.get(Material, sel.material_id)
+        if material and material.user_id != user.id:
+            continue
         responses.append(_selection_to_response(sel, material))
     return responses
 

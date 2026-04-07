@@ -1,5 +1,14 @@
 import api from './client'
-import type { PipelineConfig, PipelineRun, AgentExecution, PipelineUsageSummary, GenerateScriptResponse } from '../types'
+import type {
+  PipelineConfig,
+  PipelineRun,
+  AgentExecution,
+  PipelineUsageSummary,
+  GenerateScriptResponse,
+  PipelineDeliveryInfo,
+  PublishDraft,
+  VideoDeliveryRecord,
+} from '../types'
 
 export const launchPipeline = (projectId: string, config: PipelineConfig) =>
   api.post<PipelineRun>(`/api/projects/${projectId}/pipeline`, config).then(r => r.data)
@@ -16,11 +25,49 @@ export const getPipelineAgents = (projectId: string, runId: string) =>
 export const getPipelineUsage = (projectId: string, runId: string) =>
   api.get<PipelineUsageSummary>(`/api/projects/${projectId}/pipeline/${runId}/usage`).then(r => r.data)
 
+export const getPipelineDelivery = (projectId: string, runId: string) =>
+  api.get<PipelineDeliveryInfo>(`/api/projects/${projectId}/pipeline/${runId}/delivery`).then(r => r.data)
+
+export const savePipelineVideo = (
+  projectId: string,
+  runId: string,
+  payload?: { title?: string; description?: string },
+) =>
+  api.post<VideoDeliveryRecord>(`/api/projects/${projectId}/pipeline/${runId}/delivery/save`, payload || {}).then(r => r.data)
+
+export const publishPipelineVideoToDouyin = (
+  projectId: string,
+  runId: string,
+  payload: {
+    social_account_id: string
+    title: string
+    description: string
+    hashtags?: string[]
+    visibility?: string
+    cover_title?: string | null
+  },
+) =>
+  api.post<VideoDeliveryRecord>(`/api/projects/${projectId}/pipeline/${runId}/delivery/publish-douyin`, payload).then(r => r.data)
+
 export const cancelPipeline = (projectId: string, runId: string) =>
   api.post(`/api/projects/${projectId}/pipeline/${runId}/cancel`).then(r => r.data)
 
 export const retryFailedAgent = (projectId: string, runId: string) =>
   api.post<PipelineRun>(`/api/projects/${projectId}/pipeline/${runId}/retry-agent`).then(r => r.data)
+
+export const sendSwarmMessage = (projectId: string, runId: string, message: string) =>
+  api.post(`/api/projects/${projectId}/pipeline/${runId}/message`, { message }).then(r => r.data)
+
+export const confirmReplicationPlan = (
+  projectId: string,
+  runId: string,
+  approved: boolean,
+  adjustments?: string,
+) =>
+  api.post(`/api/projects/${projectId}/pipeline/${runId}/confirm-plan`, {
+    approved,
+    adjustments: adjustments || null,
+  }).then(r => r.data)
 
 export interface PreflightCheckResult {
   ok: boolean

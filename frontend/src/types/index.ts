@@ -1,3 +1,21 @@
+export interface AuthUser {
+  id: string
+  username: string
+  role: 'admin' | 'user'
+  is_active: boolean
+  created_at: string
+}
+
+export interface LoginRequest {
+  username: string
+  password: string
+}
+
+export interface RegisterRequest {
+  username: string
+  password: string
+}
+
 export interface Project {
   id: string
   name: string
@@ -9,6 +27,7 @@ export interface Project {
 export interface VideoUpload {
   id: string
   project_id: string
+  session_id?: string | null
   filename: string
   file_size: number
   duration_seconds: number | null
@@ -195,11 +214,60 @@ export interface ExampleCategoryResponse {
   categories: ExampleCategory[]
 }
 
+export interface BackgroundTemplate {
+  id: string
+  user_id: string
+  name: string
+  brand_info: string | null
+  user_requirements: string | null
+  character_name: string | null
+  identity: string | null
+  scene_context: string | null
+  tone_style: string | null
+  visual_style: string | null
+  do_not_include: string | null
+  notes: string | null
+  learned_preferences: string | null
+  last_learned_summary: string | null
+  learning_count: number
+  updated_by: string
+  compiled_background_context: string
+  created_at: string
+  updated_at: string
+}
+
+export interface BackgroundTemplateLearningLog {
+  id: string
+  template_id: string
+  pipeline_run_id: string
+  before_snapshot: string
+  applied_patch: string
+  after_snapshot: string
+  summary: string | null
+  created_at: string
+}
+
+export interface BackgroundTemplateKeywordDraft {
+  name: string
+  brand_info: string | null
+  user_requirements: string | null
+  character_name: string | null
+  identity: string | null
+  scene_context: string | null
+  tone_style: string | null
+  visual_style: string | null
+  do_not_include: string | null
+  notes: string | null
+}
+
 // ── Pipeline (Agent System) Types ──
 
 export interface PipelineConfig {
   script: string
   image_ids: string[]
+  session_id?: string | null
+  reference_video_id?: string | null
+  background_template_id?: string | null
   platform: string
   duration_seconds: number
   duration_mode?: string
@@ -220,9 +288,14 @@ export interface GenerateScriptResponse {
 export interface PipelineRun {
   id: string
   project_id: string
+  session_id?: string | null
   trace_id: string
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  engine: string
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'waiting_confirmation'
   current_agent: string | null
+  swarm_state_json?: string | null
+  swarm_state?: Record<string, any> | null
+  latest_lead_message?: string | null
   overall_score: number | null
   final_video_path: string | null
   error_message: string | null
@@ -241,8 +314,33 @@ export interface AgentExecution {
   output_data?: Record<string, any> | null
   duration_ms: number | null
   error_message: string | null
+  progress_text?: string | null
   created_at: string
   completed_at: string | null
+}
+
+export interface RepositoryUpload {
+  id: string
+  project_id: string
+  project_name: string
+  filename: string
+  file_size: number
+  duration_seconds: number | null
+  mime_type: string | null
+  stream_url: string
+  created_at: string
+}
+
+export interface RepositoryDelivery {
+  id: string
+  project_id: string
+  project_name: string
+  pipeline_run_id: string
+  title: string | null
+  description: string | null
+  status: string
+  video_url: string | null
+  created_at: string
 }
 
 export interface PipelineUsageByAgent {
@@ -269,6 +367,168 @@ export interface PipelineUsageSummary {
   request_count: number
   by_agent: PipelineUsageByAgent[]
   by_model: PipelineUsageByModel[]
+}
+
+export interface PlatformPreviewCard {
+  platform: 'douyin' | 'youtube'
+  label: string
+  aspect_ratio: string
+  recommended_resolution: string
+  cover_title: string
+  headline: string
+  caption: string
+  layout_hint: string
+  safe_zone_tip: string
+  context_hint: string
+  primary_action: string
+}
+
+export interface VideoDeliveryRecord {
+  id: string
+  user_id: string
+  project_id: string
+  pipeline_run_id: string
+  action_type: 'save' | 'publish'
+  platform: string
+  status: 'pending' | 'draft' | 'saved' | 'submitted' | 'published' | 'failed'
+  social_account_id?: string | null
+  title: string | null
+  description: string | null
+  draft_payload?: Record<string, any> | null
+  saved_video_path: string | null
+  external_id: string | null
+  external_url: string | null
+  external_status?: string | null
+  response_payload?: Record<string, any> | null
+  platform_error_code?: string | null
+  error_message: string | null
+  submitted_at?: string | null
+  published_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface SocialAccount {
+  id: string
+  user_id: string
+  platform: string
+  open_id: string
+  display_name: string | null
+  avatar_url: string | null
+  expires_at: string | null
+  scopes: string[]
+  status: string
+  is_default: boolean
+  last_synced_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface PublishDraft {
+  platform: string
+  pipeline_run_id: string
+  delivery_record_id?: string | null
+  social_account_id?: string | null
+  account_name?: string | null
+  title: string
+  description: string
+  hashtags: string[]
+  visibility: string
+  cover_title?: string | null
+  topic?: string | null
+  risk_tip?: string | null
+  video_source?: string | null
+  status: string
+}
+
+export interface PipelineDeliveryInfo {
+  previews: PlatformPreviewCard[]
+  records: VideoDeliveryRecord[]
+  connected_social_accounts?: SocialAccount[]
+  recommended_publish_account?: SocialAccount | null
+  latest_publish_draft?: PublishDraft | null
+}
+
+export interface AutoChatMessageImagePayload {
+  id: string
+  url: string
+  name: string
+}
+
+export interface AutoChatMessageVideoPayload {
+  id: string
+  name: string
+  streamUrl: string
+}
+
+export interface AutoChatMessageFilePayload {
+  id: string
+  name: string
+  url: string
+  mimeType?: string | null
+}
+
+export interface AutoChatMessagePayload {
+  mutedLines?: string[]
+  images?: AutoChatMessageImagePayload[]
+  files?: AutoChatMessageFilePayload[]
+  video?: AutoChatMessageVideoPayload | null
+  publishDraft?: PublishDraft | null
+}
+
+export interface AutoChatSessionState {
+  draft_script: string | null
+  background_template_id: string | null
+  reference_video_id: string | null
+  video_platform: string
+  video_no_audio: boolean
+  duration_mode: string
+  video_transition: string
+  bgm_mood: string
+  watermark_id: string | null
+  current_run_id: string | null
+}
+
+export interface AutoChatSessionSummary {
+  id: string
+  project_id: string
+  title: string
+  status_preview: string
+  latest_message_excerpt: string | null
+  latest_message_role: string | null
+  reference_video_name: string | null
+  current_run_id: string | null
+  current_run_status: string | null
+  last_activity_at: string
+  created_at: string
+  updated_at: string
+}
+
+export interface AutoChatSessionMessage {
+  id: string
+  session_id: string
+  role: 'user' | 'assistant' | 'system'
+  title?: string | null
+  content: string
+  payload?: AutoChatMessagePayload | null
+  created_at: string
+  updated_at: string
+}
+
+export interface AutoChatSessionDetail {
+  session: AutoChatSessionSummary
+  state: AutoChatSessionState
+  messages: AutoChatSessionMessage[]
+  selected_materials: MaterialSelection[]
+  selected_material_items: MaterialItem[]
+  reference_video: VideoUpload | null
+  current_run: PipelineRun | null
+  agent_executions: AgentExecution[]
+  delivery_info: PipelineDeliveryInfo | null
+  usage_summary: PipelineUsageSummary | null
+  connected_social_accounts?: SocialAccount[]
+  recommended_publish_account?: SocialAccount | null
+  latest_publish_draft?: PublishDraft | null
 }
 
 export interface ProjectPipelineUsageItem {
@@ -328,4 +588,30 @@ export interface ProjectHistoryRun {
 export interface ProjectHistoryResponse {
   project_id: string
   runs: ProjectHistoryRun[]
+}
+
+// ── Chat (ReAct Agent) Types ──
+
+export type ChatEventType = 'reasoning' | 'tool_call' | 'tool_result' | 'tool_progress' | 'error' | 'done'
+
+export interface ChatStreamEvent {
+  event: ChatEventType
+  data: Record<string, any>
+}
+
+export interface ToolCallInfo {
+  tool_name: string
+  input: Record<string, any>
+  call_id: string
+  result?: string
+  media_urls?: string[]
+  status: 'running' | 'completed' | 'failed'
+}
+
+export interface ChatMessageItem {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  tool_calls?: ToolCallInfo[]
+  timestamp: number
 }

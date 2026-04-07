@@ -4,6 +4,7 @@ const api = axios.create({
   baseURL: '',
   headers: { 'Content-Type': 'application/json' },
   timeout: 30_000,
+  withCredentials: true,
 })
 
 // Retry GET requests up to 2 times on transient failures

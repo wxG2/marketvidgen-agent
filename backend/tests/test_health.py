@@ -15,4 +15,4 @@ async def test_openapi_docs_available(client: AsyncClient):
     resp = await client.get("/openapi.json")
     assert resp.status_code == 200
     schema = resp.json()
-    assert schema["info"]["title"] == "VidGen API"
+    assert schema["info"]["title"] == "capy API"
