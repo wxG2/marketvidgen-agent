@@ -327,8 +327,15 @@ class PipelineExecutor:
             return artifacts.get("orchestrator_plan", {})
         if agent_name == "audio_subtitle":
             prompt_plan = artifacts.get("prompt_plan", {})
+            orchestrator_plan = artifacts.get("orchestrator_plan", {})
+            shot_prompts = prompt_plan.get("shot_prompts", [])
+            shot_script = "\n".join(
+                str(item.get("script_segment") or "").strip()
+                for item in shot_prompts
+                if isinstance(item, dict) and str(item.get("script_segment") or "").strip()
+            )
             return {
-                "script": input_config.get("script", ""),
+                "script": shot_script or orchestrator_plan.get("script") or input_config.get("script", ""),
                 "voice_params": prompt_plan.get("voice_params", {}),
             }
         if agent_name == "video_generator":

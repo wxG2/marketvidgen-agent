@@ -83,6 +83,7 @@ interface Props {
   onSwitchToManual: () => void
   onSwitchProject?: (project: Project) => void
   onRegisterOpenPicker?: (fn: () => void) => void
+  onOpenRepositoryWithPicker?: (onConfirm: (items: MaterialItem[]) => void) => void
 }
 
 function summarizeStatus(run: { status: string; current_agent?: string | null } | null): string {
@@ -95,7 +96,7 @@ function summarizeStatus(run: { status: string; current_agent?: string | null } 
   return '生成中'
 }
 
-export default function AutoModeStudio({ projectId, onSwitchToManual, onSwitchProject, onRegisterOpenPicker }: Props) {
+export default function AutoModeStudio({ projectId, onSwitchToManual, onSwitchProject, onRegisterOpenPicker, onOpenRepositoryWithPicker }: Props) {
   const {
     currentRun,
     setCurrentRun,
@@ -118,6 +119,8 @@ export default function AutoModeStudio({ projectId, onSwitchToManual, onSwitchPr
   const [backgroundTemplateId, setBackgroundTemplateId] = useState<string | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
   const [showPicker, setShowPicker] = useState(false)
+  const [showAddMenu, setShowAddMenu] = useState(false)
+  const localUploadRef = useRef<HTMLInputElement>(null)
   const [script, setScript] = useState('')
   const [videoPlatform, setVideoPlatform] = useState('generic')
   const [videoNoAudio, setVideoNoAudio] = useState(true)
@@ -184,7 +187,7 @@ export default function AutoModeStudio({ projectId, onSwitchToManual, onSwitchPr
   const visibleExecutions = AGENT_ORDER
     .map((agentName) => latestExecByAgent.get(agentName))
     .filter((execution): execution is AgentExecution => Boolean(execution))
-  const currentExecution = visibleExecutions.find((execution) => execution.status !== 'completed') || null
+  const currentExecution = visibleExecutions.find((execution) => ['pending', 'running', 'failed'].includes(execution.status)) || null
   const completedExecutions = visibleExecutions.filter((execution) => execution.status === 'completed')
   const runStatusText = summarizeStatus(currentRun)
   const hasActiveRunControl = Boolean(
@@ -196,14 +199,6 @@ export default function AutoModeStudio({ projectId, onSwitchToManual, onSwitchPr
     [messages],
   )
 
-  const replicationPlan = useMemo(() => {
-    if (currentRun?.status !== 'waiting_confirmation') return null
-    const orchExec = agentExecutions.find(
-      (execution) => execution.agent_name === 'orchestrator' && execution.status === 'completed',
-    )
-    return orchExec?.output_data?.replication_plan ?? null
-  }, [agentExecutions, currentRun?.status])
-
   const orchestratorExecution = useMemo(
     () => [...agentExecutions]
       .filter((execution) => execution.agent_name === 'orchestrator')
@@ -214,6 +209,11 @@ export default function AutoModeStudio({ projectId, onSwitchToManual, onSwitchPr
     () => orchestratorExecution?.output_data ?? null,
     [orchestratorExecution],
   )
+  const replicationPlan = useMemo(
+    () => replicationOutput?.replication_plan ?? null,
+    [replicationOutput],
+  )
+  const showReplicationPlanActions = currentRun?.status === 'waiting_confirmation'
 
   const applySessionSummaryPatch = useCallback((sessionId: string, patch: Partial<AutoChatSessionSummary>) => {
     setSessionSummaries((prev) => {
@@ -1043,7 +1043,9 @@ export default function AutoModeStudio({ projectId, onSwitchToManual, onSwitchPr
         sseRef.current = null
       }
       const refreshedRun = await getPipelineRun(projectId, currentRun.id)
+      const refreshedAgents = await getPipelineAgents(projectId, currentRun.id)
       setCurrentRun(refreshedRun)
+      setAgentExecutions(refreshedAgents)
       setShowAdjustInput(false)
       setAdjustmentText('')
       await appendPersistedMessage({
@@ -1072,8 +1074,12 @@ export default function AutoModeStudio({ projectId, onSwitchToManual, onSwitchPr
       return
     }
     await cancelPipeline(projectId, currentRun.id)
-    const run = await getPipelineRun(projectId, currentRun.id)
+    const [run, agents] = await Promise.all([
+      getPipelineRun(projectId, currentRun.id),
+      getPipelineAgents(projectId, currentRun.id),
+    ])
     setCurrentRun(run)
+    setAgentExecutions(agents)
   }
 
   return (
@@ -1415,12 +1421,16 @@ export default function AutoModeStudio({ projectId, onSwitchToManual, onSwitchPr
             )
           })}
 
-          {currentRun?.status === 'waiting_confirmation' && replicationPlan && (
+          {replicationPlan && (
             <div className="max-w-4xl overflow-hidden rounded-3xl border border-violet-200 bg-violet-50 shadow-sm">
               <div className="border-b border-violet-200 px-5 py-4">
-                <div className="text-xs uppercase tracking-[0.18em] text-violet-500">复刻方案确认</div>
+                <div className="text-xs uppercase tracking-[0.18em] text-violet-500">
+                  {showReplicationPlanActions ? '复刻方案确认' : '复刻方案'}
+                </div>
                 <div className="mt-2 text-sm leading-6 text-slate-700">
-                  方案已经整理完成。你可以直接确认执行，也可以先补充调整意见后再继续。
+                  {showReplicationPlanActions
+                    ? '方案已经整理完成。你可以直接确认执行，也可以先补充调整意见后再继续。'
+                    : '这份复刻方案会在执行和完成后继续保留，方便你随时回看本次镜头设计、音频设计和参考依据。'}
                 </div>
               </div>
 
@@ -1576,62 +1586,64 @@ export default function AutoModeStudio({ projectId, onSwitchToManual, onSwitchPr
                 </div>
               </div>
 
-              <div className="border-t border-violet-200 bg-white/80 px-5 py-4">
-                {showAdjustInput && (
-                  <div className="mb-3">
-                    <textarea
-                      value={adjustmentText}
-                      onChange={(event) => setAdjustmentText(event.target.value)}
-                      placeholder="请描述你希望如何调整复刻方案…"
-                      rows={2}
-                      className="w-full rounded-xl border border-violet-200 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-violet-300"
-                    />
-                  </div>
-                )}
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    onClick={() => handleConfirmPlan(true).catch(() => {})}
-                    disabled={confirmingPlan || terminatingPlan}
-                    className="flex items-center gap-2 rounded-full bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50"
-                  >
-                    {confirmingPlan ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
-                    确认执行
-                  </button>
-                  {!showAdjustInput ? (
-                    <button
-                      onClick={() => setShowAdjustInput(true)}
-                      className="flex items-center gap-2 rounded-full border border-violet-300 px-4 py-2 text-sm text-violet-700 hover:bg-violet-50"
-                    >
-                      调整方案
-                    </button>
-                  ) : (
-                    <>
-                      <button
-                        onClick={() => handleConfirmPlan(false).catch(() => {})}
-                        disabled={confirmingPlan || terminatingPlan || !adjustmentText.trim()}
-                        className="flex items-center gap-2 rounded-full border border-violet-300 px-4 py-2 text-sm text-violet-700 hover:bg-violet-50 disabled:opacity-50"
-                      >
-                        {confirmingPlan ? <Loader2 size={14} className="animate-spin" /> : null}
-                        提交调整
-                      </button>
-                      <button
-                        onClick={() => { setShowAdjustInput(false); setAdjustmentText('') }}
-                        className="rounded-full border border-slate-200 px-3 py-2 text-sm text-slate-500 hover:bg-slate-50"
-                      >
-                        <X size={14} />
-                      </button>
-                    </>
+              {showReplicationPlanActions && (
+                <div className="border-t border-violet-200 bg-white/80 px-5 py-4">
+                  {showAdjustInput && (
+                    <div className="mb-3">
+                      <textarea
+                        value={adjustmentText}
+                        onChange={(event) => setAdjustmentText(event.target.value)}
+                        placeholder="请描述你希望如何调整复刻方案…"
+                        rows={2}
+                        className="w-full rounded-xl border border-violet-200 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-violet-300"
+                      />
+                    </div>
                   )}
-                  <button
-                    onClick={() => handleTerminatePlan().catch(() => {})}
-                    disabled={confirmingPlan || terminatingPlan}
-                    className="flex items-center gap-2 rounded-full border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-600 hover:bg-red-100 disabled:opacity-50"
-                  >
-                    {terminatingPlan ? <Loader2 size={14} className="animate-spin" /> : <StopCircle size={14} />}
-                    终止本次对话
-                  </button>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => handleConfirmPlan(true).catch(() => {})}
+                      disabled={confirmingPlan || terminatingPlan}
+                      className="flex items-center gap-2 rounded-full bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50"
+                    >
+                      {confirmingPlan ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                      确认执行
+                    </button>
+                    {!showAdjustInput ? (
+                      <button
+                        onClick={() => setShowAdjustInput(true)}
+                        className="flex items-center gap-2 rounded-full border border-violet-300 px-4 py-2 text-sm text-violet-700 hover:bg-violet-50"
+                      >
+                        调整方案
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => handleConfirmPlan(false).catch(() => {})}
+                          disabled={confirmingPlan || terminatingPlan || !adjustmentText.trim()}
+                          className="flex items-center gap-2 rounded-full border border-violet-300 px-4 py-2 text-sm text-violet-700 hover:bg-violet-50 disabled:opacity-50"
+                        >
+                          {confirmingPlan ? <Loader2 size={14} className="animate-spin" /> : null}
+                          提交调整
+                        </button>
+                        <button
+                          onClick={() => { setShowAdjustInput(false); setAdjustmentText('') }}
+                          className="rounded-full border border-slate-200 px-3 py-2 text-sm text-slate-500 hover:bg-slate-50"
+                        >
+                          <X size={14} />
+                        </button>
+                      </>
+                    )}
+                    <button
+                      onClick={() => handleTerminatePlan().catch(() => {})}
+                      disabled={confirmingPlan || terminatingPlan}
+                      className="flex items-center gap-2 rounded-full border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-600 hover:bg-red-100 disabled:opacity-50"
+                    >
+                      {terminatingPlan ? <Loader2 size={14} className="animate-spin" /> : <StopCircle size={14} />}
+                      终止本次对话
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           )}
 
@@ -1725,12 +1737,65 @@ export default function AutoModeStudio({ projectId, onSwitchToManual, onSwitchPr
             />
             <div className="mt-3 flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <button
-                  onClick={() => setShowPicker(true)}
-                  className="rounded-full px-3 py-2 text-sm text-slate-600 bg-slate-100 hover:bg-slate-200 flex items-center gap-2"
-                >
-                  <ImagePlus size={14} /> 添加素材
-                </button>
+                <div className="relative">
+                  <button
+                    onClick={() => setShowAddMenu((prev) => !prev)}
+                    className="rounded-full px-3 py-2 text-sm text-slate-600 bg-slate-100 hover:bg-slate-200 flex items-center gap-2"
+                  >
+                    <ImagePlus size={14} /> 添加素材
+                  </button>
+                  {showAddMenu && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setShowAddMenu(false)} />
+                      <div className="absolute left-0 bottom-full mb-2 z-50 w-48 rounded-xl border border-slate-200 bg-white py-1 shadow-lg">
+                        <button
+                          onClick={() => { setShowAddMenu(false); localUploadRef.current?.click() }}
+                          className="w-full px-4 py-2.5 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+                        >
+                          <FolderUp size={14} className="text-slate-400" /> 本地上传
+                        </button>
+                        <button
+                          onClick={() => { setShowAddMenu(false); onOpenRepositoryWithPicker?.(handleMaterialsFromPicker) }}
+                          className="w-full px-4 py-2.5 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+                        >
+                          <FolderOpen size={14} className="text-slate-400" /> 从素材库选择
+                        </button>
+                      </div>
+                    </>
+                  )}
+                  <input
+                    ref={localUploadRef}
+                    type="file"
+                    className="hidden"
+                    accept="image/*,video/*"
+                    multiple
+                    onChange={async (event) => {
+                      const files = event.target.files
+                      if (!files || files.length === 0) return
+                      const { uploadProjectMaterials } = await import('../../api/materials')
+                      const { uploadVideo } = await import('../../api/upload')
+                      const imagePayload: { file: File; relativePath: string }[] = []
+                      const videoFiles: File[] = []
+                      const VIDEO_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.webm', '.flv', '.wmv', '.m4v', '.3gp'])
+                      for (let i = 0; i < files.length; i++) {
+                        const file = files[i]
+                        const dot = file.name.lastIndexOf('.')
+                        const ext = dot >= 0 ? file.name.slice(dot).toLowerCase() : ''
+                        if (VIDEO_EXTS.has(ext)) { videoFiles.push(file); continue }
+                        imagePayload.push({ file, relativePath: `对话上传/${file.name}` })
+                      }
+                      if (imagePayload.length > 0) {
+                        const result = await uploadProjectMaterials(projectId, imagePayload, false)
+                        if (result.uploaded_items?.length) handleMaterialsFromPicker(result.uploaded_items)
+                      }
+                      for (const video of videoFiles) {
+                        const uploaded = await uploadVideo(projectId, video, undefined, activeSessionId)
+                        handleReferenceVideoSelected(uploaded)
+                      }
+                      if (localUploadRef.current) localUploadRef.current.value = ''
+                    }}
+                  />
+                </div>
                 <button
                   onClick={() => handleGenerateScript().catch(() => {})}
                   disabled={generatingScript || selections.length === 0}

@@ -113,6 +113,24 @@ def _as_numeric_list(value: object) -> list[float]:
     return normalized
 
 
+def _build_narration_script_from_shots(shots: list[dict], fallback_script: str = "") -> str:
+    """Compose a narration script from orchestrated shot segments."""
+    if not isinstance(shots, list):
+        return fallback_script
+
+    segments: list[str] = []
+    for shot in shots:
+        if not isinstance(shot, dict):
+            continue
+        text = _as_string_or_empty(shot.get("script_segment")).strip()
+        if text:
+            segments.append(text)
+
+    if segments:
+        return "\n".join(segments)
+    return fallback_script
+
+
 async def _run_cancellable(
     coro: "asyncio.Coroutine[None, None, _T]",
     context: "AgentContext",
@@ -172,6 +190,7 @@ class OrchestratorAgent(BaseAgent):
         style: str = input_data.get("style", "commercial")
         voice_id: str = input_data.get("voice_id", "default")
         background_context: str = input_data.get("background_context", "")
+        selected_skill: str | None = None
 
         supported_durations: list[int] = settings.SEEDANCE_SUPPORTED_DURATIONS
 
@@ -257,6 +276,7 @@ class OrchestratorAgent(BaseAgent):
                 "properties": {
                     "video_type": {"type": "string"},
                     "voice_speed": {"type": "number"},
+                    "narration_script": {"type": "string"},
                     "shots": {
                         "type": "array",
                         "items": {
@@ -270,7 +290,7 @@ class OrchestratorAgent(BaseAgent):
                         },
                     },
                 },
-                "required": ["video_type", "voice_speed", "shots"],
+                "required": ["video_type", "voice_speed", "narration_script", "shots"],
             },
         }
 
@@ -293,9 +313,11 @@ class OrchestratorAgent(BaseAgent):
             f"Script:\n{script}\n\n"
             f"Platform: {platform}\nStyle: {style}\n"
             + (f"Background context:\n{background_context}\n\n" if background_context else "")
-            + 
+            +
             f"Duration constraint: {duration_instruction}\n"
-            f"Please split the story into exactly {num_shots} shots."
+            f"Please first rewrite the user's request into a natural, polished narration script suitable for TTS voiceover. "
+            f"The narration must keep the user's real goal, remove meta-instructions, and sound like final spoken copy. "
+            f"Then split that narration into exactly {num_shots} shots."
         )
 
         try:
@@ -327,6 +349,7 @@ class OrchestratorAgent(BaseAgent):
                 })
             video_type = llm_output.get("video_type", self._detect_video_type(script))
             voice_speed = float(llm_output.get("voice_speed", 1.0))
+            narration_script = _as_string_or_empty(llm_output.get("narration_script")).strip()
             usage_records = [{
                 "provider": "qwen",
                 "model_name": getattr(self.llm, "client", None).model if getattr(self.llm, "client", None) else "mock",
@@ -346,8 +369,10 @@ class OrchestratorAgent(BaseAgent):
                 })
             voice_speed = 1.0
             usage_records = []
+            narration_script = ""
 
         actual_total = sum(s["duration_seconds"] for s in shots)
+        narration_script = narration_script or _build_narration_script_from_shots(shots, script)
         logger.info(
             f"Orchestrator: mode={duration_mode}, target={duration_seconds}s, "
             f"actual_total={actual_total}s, shots={[s['duration_seconds'] for s in shots]}"
@@ -363,7 +388,8 @@ class OrchestratorAgent(BaseAgent):
                 "voice_id": voice_id,
                 "speed": voice_speed,
             },
-            "script": script,
+            "script": narration_script,
+            "user_script": script,
             "background_context": background_context,
             "selected_skill": selected_skill,
         }

@@ -233,8 +233,15 @@ class LangGraphPipelineExecutor:
         context = state["context"]
         input_config = state["input_config"]
         prompt_plan = state["prompt_plan"]
+        orchestrator_plan = state["orchestrator_plan"]
+        shot_prompts = prompt_plan.get("shot_prompts", [])
+        shot_script = "\n".join(
+            str(item.get("script_segment") or "").strip()
+            for item in shot_prompts
+            if isinstance(item, dict) and str(item.get("script_segment") or "").strip()
+        )
         audio_input = {
-            "script": input_config["script"],
+            "script": shot_script or orchestrator_plan.get("script") or input_config["script"],
             "voice_params": prompt_plan["voice_params"],
         }
         result = await self.audio_agent.run(context, audio_input)
@@ -362,8 +369,14 @@ class LangGraphPipelineExecutor:
         prompt_plan: dict,
         orch_plan: dict,
     ) -> dict:
+        shot_prompts = prompt_plan.get("shot_prompts", [])
+        shot_script = "\n".join(
+            str(item.get("script_segment") or "").strip()
+            for item in shot_prompts
+            if isinstance(item, dict) and str(item.get("script_segment") or "").strip()
+        )
         audio_input = {
-            "script": input_config.get("script", ""),
+            "script": shot_script or orch_plan.get("script") or input_config.get("script", ""),
             "voice_params": prompt_plan.get("voice_params", {}),
         }
         video_input = {

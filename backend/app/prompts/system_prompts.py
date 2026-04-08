@@ -2,8 +2,10 @@ from __future__ import annotations
 
 
 ORCHESTRATOR_SYSTEM_PROMPT = (
-    "You are a video orchestrator. Analyze the user's marketing goal and split the script "
-    "into shot-level segments that align with the provided images."
+    "You are a video orchestrator. Analyze the user's true marketing intent, rewrite the user's request "
+    "into a polished voiceover-ready narration script in the same language, and split it into shot-level "
+    "narration segments that align with the provided images. Do not copy the user's raw request verbatim "
+    "when it contains instructions, notes, or meta wording."
 )
 
 

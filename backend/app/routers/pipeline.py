@@ -9,6 +9,7 @@ from typing import AsyncGenerator
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
@@ -85,6 +86,36 @@ def _get_launch_lock(lock_key: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         _launch_locks[lock_key] = lock
     return lock
+
+
+def _build_replication_narration_script(replication_plan: dict, fallback_script: str) -> str:
+    if not isinstance(replication_plan, dict):
+        return fallback_script
+
+    audio_design = replication_plan.get("audio_design")
+    narration_notes = ""
+    if isinstance(audio_design, dict):
+        raw_notes = audio_design.get("narration_notes")
+        if isinstance(raw_notes, str):
+            narration_notes = raw_notes.strip()
+
+    shots = replication_plan.get("shots")
+    shot_lines: list[str] = []
+    if isinstance(shots, list):
+        for shot in shots:
+            if not isinstance(shot, dict):
+                continue
+            description = str(shot.get("description") or "").strip()
+            if description:
+                shot_lines.append(description)
+
+    if narration_notes and shot_lines:
+        return f"{narration_notes}\n\n" + "\n".join(shot_lines)
+    if shot_lines:
+        return "\n".join(shot_lines)
+    if narration_notes:
+        return narration_notes
+    return fallback_script
 
 
 def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
@@ -531,6 +562,18 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
         run.status = "cancelled"
         run.current_agent = None
         run.updated_at = datetime.now(timezone.utc)
+        await db.execute(
+            update(AgentExecution)
+            .where(
+                AgentExecution.pipeline_run_id == run_id,
+                AgentExecution.status.in_(["pending", "running"]),
+            )
+            .values(
+                status="cancelled",
+                error_message="Pipeline cancelled",
+                completed_at=run.updated_at,
+            )
+        )
         if run.session_id:
             session = await get_auto_chat_session_for_user(db, user.id, project_id, run.session_id)
             session.status_preview = "已取消"
@@ -602,6 +645,10 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
 
         orch_output = json.loads(orch_exec.output_data)
         replication_plan = orch_output.get("replication_plan", {})
+        narration_script = _build_replication_narration_script(
+            replication_plan,
+            orch_output.get("script", input_config.get("script", "")),
+        )
 
         # Convert replication plan shots to standard orchestrator_plan format
         supported_durations = settings.SEEDANCE_SUPPORTED_DURATIONS
@@ -625,8 +672,9 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
             "duration_seconds": sum(s["duration_seconds"] for s in standard_shots),
             "style": orch_output.get("style", input_config.get("style", "commercial")),
             "voice_config": orch_output.get("voice_config", {"voice_id": "default", "speed": 1.0}),
-            "script": orch_output.get("script", input_config.get("script", "")),
+            "script": narration_script,
             "background_context": input_config.get("background_context", ""),
+            "replication_plan": replication_plan,
         }
 
         # Update run status
@@ -967,8 +1015,15 @@ def _build_agent_input(agent_name: str, artifacts: dict, input_config: dict) -> 
         return artifacts.get("orchestrator_plan", {})
     if agent_name == "audio_subtitle":
         prompt_plan = artifacts.get("prompt_plan", {})
+        orchestrator_plan = artifacts.get("orchestrator_plan", {})
+        shot_prompts = prompt_plan.get("shot_prompts", [])
+        shot_script = "\n".join(
+            str(item.get("script_segment") or "").strip()
+            for item in shot_prompts
+            if isinstance(item, dict) and str(item.get("script_segment") or "").strip()
+        )
         return {
-            "script": input_config.get("script", ""),
+            "script": shot_script or orchestrator_plan.get("script") or input_config.get("script", ""),
             "voice_params": prompt_plan.get("voice_params", {}),
         }
     if agent_name == "video_generator":

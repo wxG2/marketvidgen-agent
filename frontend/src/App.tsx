@@ -104,6 +104,7 @@ export default function App() {
   const { isAutoMode, setAutoMode, reset: resetPipeline } = usePipelineStore()
   const { toast } = useToast()
   const openPickerFnRef = useRef<(() => void) | null>(null)
+  const repositoryPickerCallbackRef = useRef<((items: import('./types').MaterialItem[]) => void) | null>(null)
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
   const [showDashboard, setShowDashboard] = useState(false)
@@ -183,12 +184,6 @@ export default function App() {
             <Wand2 size={14} /> 一键生成
           </button>
           <button
-            onClick={() => openPickerFnRef.current?.()}
-            className="rounded-full bg-[#fffaf1] border border-[#d9ccb5] text-[#6d5936] px-4 py-2 text-sm font-medium hover:bg-[#f7ecd8] flex items-center gap-2"
-          >
-            <Plus size={14} /> 素材与视频
-          </button>
-          <button
             onClick={() => { setAutoMode(false); resetPipeline() }}
             className="rounded-full bg-[#fffaf1] border border-[#d9ccb5] text-[#6d5936] px-4 py-2 text-sm font-medium hover:bg-[#f7ecd8]"
           >
@@ -200,7 +195,14 @@ export default function App() {
       <div className="h-full flex flex-col">
         <div className="flex-1 overflow-auto">
           {showRepository ? (
-            <RepositoryPage onBack={() => setShowRepository(false)} />
+            <RepositoryPage
+              onBack={() => { setShowRepository(false); repositoryPickerCallbackRef.current = null }}
+              onPickerConfirm={repositoryPickerCallbackRef.current ? (items) => {
+                repositoryPickerCallbackRef.current!(items)
+                repositoryPickerCallbackRef.current = null
+                setShowRepository(false)
+              } : undefined}
+            />
           ) : showDashboard ? (
             <UsageDashboardPage
               currentProjectId={project.id}
@@ -213,6 +215,7 @@ export default function App() {
               onSwitchToManual={() => { setAutoMode(false); resetPipeline() }}
               onSwitchProject={handleSwitchProject}
               onRegisterOpenPicker={(fn) => { openPickerFnRef.current = fn }}
+              onOpenRepositoryWithPicker={(cb) => { repositoryPickerCallbackRef.current = cb; setShowRepository(true); setShowDashboard(false) }}
             />
           ) : (
             /* ── Manual mode: Step-by-step workflow ── */

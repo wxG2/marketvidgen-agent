@@ -16,6 +16,7 @@ from app.models.social_account import SocialAccount
 from app.models.usage import ModelUsage
 from app.models.auto_chat import AutoChatSession, AutoChatMessage, AutoSessionMaterialSelection
 from app.models.agent_memory import AgentMemory
+from app.models.repository_asset import RepositoryAsset
 
 __all__ = [
     "User", "UserSession",
@@ -29,4 +30,5 @@ __all__ = [
     "ModelUsage",
     "AutoChatSession", "AutoChatMessage", "AutoSessionMaterialSelection",
     "AgentMemory",
+    "RepositoryAsset",
 ]

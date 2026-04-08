@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Archive, ArrowLeft, Download, Film, FolderOpen, Image, Play, Trash2, Video } from 'lucide-react'
+import { Archive, ArrowLeft, Check, Download, Film, FolderOpen, Image, Play, Trash2, Video } from 'lucide-react'
 import { deleteUserUpload, listUserUploads, listUserDeliveries } from '../../api/repository'
 import { getCategories, getMaterials } from '../../api/materials'
 import type { RepositoryUpload, RepositoryDelivery, MaterialItem, MaterialCategory } from '../../types'
@@ -10,6 +10,7 @@ type Tab = 'uploads' | 'materials' | 'deliveries'
 
 interface Props {
   onBack: () => void
+  onPickerConfirm?: (items: MaterialItem[]) => void
 }
 
 function formatBytes(bytes: number) {
@@ -22,8 +23,10 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
-export default function RepositoryPage({ onBack }: Props) {
-  const [tab, setTab] = useState<Tab>('deliveries')
+export default function RepositoryPage({ onBack, onPickerConfirm }: Props) {
+  const pickerMode = !!onPickerConfirm
+  const [tab, setTab] = useState<Tab>(pickerMode ? 'materials' : 'deliveries')
+  const [pickerSelectedItems, setPickerSelectedItems] = useState<Map<string, MaterialItem>>(new Map())
   const { toast } = useToast()
 
   // Uploads
@@ -92,18 +95,33 @@ export default function RepositoryPage({ onBack }: Props) {
 
   return (
     <div className="h-full flex flex-col bg-white">
-      <div className="px-6 py-4 border-b border-gray-200 flex items-center gap-4">
-        <button
-          onClick={onBack}
-          className="inline-flex items-center gap-2 text-sm text-gray-500 hover:text-gray-800 transition-colors"
-        >
-          <ArrowLeft size={16} />
-          返回
-        </button>
-        <div className="flex items-center gap-2">
-          <Archive size={16} className="text-blue-500" />
-          <span className="text-base font-semibold text-gray-900">我的仓库</span>
+      <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <button
+            onClick={onBack}
+            className="inline-flex items-center gap-2 text-sm text-gray-500 hover:text-gray-800 transition-colors"
+          >
+            <ArrowLeft size={16} />
+            {pickerMode ? '取消，返回对话' : '返回'}
+          </button>
+          <div className="flex items-center gap-2">
+            <Archive size={16} className="text-blue-500" />
+            <span className="text-base font-semibold text-gray-900">
+              {pickerMode ? '从素材库选择' : '我的仓库'}
+            </span>
+          </div>
         </div>
+        {pickerMode && (
+          <button
+            onClick={() => {
+              onPickerConfirm!(Array.from(pickerSelectedItems.values()))
+            }}
+            disabled={pickerSelectedItems.size === 0}
+            className="rounded-full bg-blue-600 px-5 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-40 transition-colors"
+          >
+            确认选择{pickerSelectedItems.size > 0 ? ` (${pickerSelectedItems.size})` : ''}
+          </button>
+        )}
       </div>
 
       <div className="px-6 pt-4 border-b border-gray-200">
@@ -273,22 +291,48 @@ export default function RepositoryPage({ onBack }: Props) {
                 </div>
               ) : (
                 <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 gap-3">
-                  {materials.map(item => (
-                    <div key={item.id} className="rounded-xl overflow-hidden border border-gray-200 bg-white">
-                      <div className="aspect-[4/3] bg-gray-100">
-                        {item.media_type.startsWith('video/') ? (
-                          <div className="w-full h-full flex items-center justify-center bg-slate-800">
-                            <Film size={20} className="text-slate-400" />
+                  {materials.map(item => {
+                    const selected = pickerSelectedItems.has(item.id)
+                    return (
+                      <div
+                        key={item.id}
+                        onClick={pickerMode ? () => {
+                          setPickerSelectedItems(prev => {
+                            const next = new Map(prev)
+                            if (next.has(item.id)) {
+                              next.delete(item.id)
+                            } else {
+                              next.set(item.id, item)
+                            }
+                            return next
+                          })
+                        } : undefined}
+                        className={cn(
+                          'rounded-xl overflow-hidden border bg-white relative',
+                          pickerMode ? 'cursor-pointer transition-all' : '',
+                          selected ? 'border-blue-500 ring-2 ring-blue-300' : 'border-gray-200',
+                        )}
+                      >
+                        <div className="aspect-[4/3] bg-gray-100">
+                          {item.media_type.startsWith('video/') ? (
+                            <div className="w-full h-full flex items-center justify-center bg-slate-800">
+                              <Film size={20} className="text-slate-400" />
+                            </div>
+                          ) : (
+                            <img src={item.thumbnail_url || ''} alt={item.filename} className="w-full h-full object-cover" />
+                          )}
+                        </div>
+                        <div className="px-2 py-1.5">
+                          <div className="text-xs text-gray-700 truncate">{item.filename}</div>
+                        </div>
+                        {selected && (
+                          <div className="absolute top-1.5 right-1.5 h-5 w-5 rounded-full bg-blue-600 flex items-center justify-center shadow">
+                            <Check size={11} className="text-white" />
                           </div>
-                        ) : (
-                          <img src={item.thumbnail_url || ''} alt={item.filename} className="w-full h-full object-cover" />
                         )}
                       </div>
-                      <div className="px-2 py-1.5">
-                        <div className="text-xs text-gray-700 truncate">{item.filename}</div>
-                      </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               )}
             </div>
