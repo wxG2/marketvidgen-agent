@@ -1,0 +1,62 @@
+version: "3.9"
+
+services:
+  # ── Qdrant vector DB (for Mem0 semantic memory) ───────────────────────────
+  qdrant:
+    image: qdrant/qdrant:v1.9.4
+    container_name: vidgen_qdrant
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "6333:6333"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend (FastAPI) ─────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: vidgen_backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: "sqlite+aiosqlite:////app/data/vidgen.db"
+      MEM0_QDRANT_HOST: "qdrant"
+      MEM0_QDRANT_PORT: "6333"
+    volumes:
+      - backend_data:/app/data
+      - ./materials:/app/materials:ro
+      - ./examples:/app/examples:ro
+      - ./bgm:/app/bgm:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ── Frontend (Vue 3 + nginx) ──────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: vidgen_frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  qdrant_data:
+  backend_data:

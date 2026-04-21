@@ -25,6 +25,7 @@ from app.services.material_service import (
     get_categories, get_materials_by_category, scan_materials,
     index_uploaded_file, delete_material, delete_category,
 )
+from app.services.upload_validation import validate_upload_file
 
 router = APIRouter(tags=["materials"])
 
@@ -68,16 +69,13 @@ async def upload_materials(
             else:
                 category = "未分类"
 
-            content = await file.read()
+            validated = await validate_upload_file(file, kind="image")
             raw_filename = file.filename or f"file_{i}"
-            # Browser may send full path as filename; extract just the basename
-            filename = PurePosixPath(raw_filename).name
-            if not filename:
-                filename = raw_filename
+            filename = validated.filename
 
-            print(f"[upload] file {i}: raw_filename={raw_filename!r}, filename={filename!r}, category={category!r}, size={len(content)}")
+            print(f"[upload] file {i}: raw_filename={raw_filename!r}, filename={filename!r}, category={category!r}, size={validated.file_size}")
 
-            material = await index_uploaded_file(db, settings.MATERIALS_ROOT, user.id, category, filename, content)
+            material = await index_uploaded_file(db, settings.MATERIALS_ROOT, user.id, category, filename, validated.content)
             if material:
                 stats["files"] += 1
                 stats["categories_set"].add(category)
@@ -135,10 +133,9 @@ async def upload_project_materials(
             else:
                 category = "未分类"
 
-            content = await file.read()
-            raw_filename = file.filename or f"file_{i}"
-            filename = PurePosixPath(raw_filename).name or raw_filename
-            material = await index_uploaded_file(db, settings.MATERIALS_ROOT, user.id, category, filename, content)
+            validated = await validate_upload_file(file, kind="image")
+            filename = validated.filename
+            material = await index_uploaded_file(db, settings.MATERIALS_ROOT, user.id, category, filename, validated.content)
             if not material:
                 stats["skipped"] += 1
                 continue

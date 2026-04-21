@@ -1,18 +1,16 @@
 import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [vue(), tailwindcss()],
   server: {
     proxy: {
       '/api': {
         target: 'http://localhost:8000',
-        // Disable buffering for SSE streams
         configure: (proxy) => {
           proxy.on('proxyRes', (proxyRes) => {
             if (proxyRes.headers['content-type']?.includes('text/event-stream')) {
-              // Ensure no buffering for SSE
               proxyRes.headers['cache-control'] = 'no-cache'
               proxyRes.headers['x-accel-buffering'] = 'no'
             }
@@ -21,6 +19,7 @@ export default defineConfig({
       },
       '/examples': 'http://localhost:8000',
       '/generated': 'http://localhost:8000',
+      '/repository': 'http://localhost:8000',
     },
   },
 })

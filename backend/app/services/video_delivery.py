@@ -149,7 +149,7 @@ async def save_video_to_repository(
         raise FileNotFoundError("Final video not found")
 
     safe_title = _slugify(title or derive_delivery_title(run))
-    target_dir = Path(settings.VIDEO_REPOSITORY_DIR) / user_id / project_id
+    target_dir = Path(settings.VIDEO_REPOSITORY_DIR).resolve() / user_id / project_id
     target_dir.mkdir(parents=True, exist_ok=True)
     target_path = target_dir / f"{run.id[:8]}_{safe_title}{source_path.suffix or '.mp4'}"
     shutil.copy2(source_path, target_path)

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import json
+import asyncio
+import re
+from contextlib import suppress
 from datetime import datetime, timezone
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sse_starlette.sse import EventSourceResponse
 
 from app.auth import (
     get_auto_chat_session_for_user,
@@ -16,6 +21,7 @@ from app.auth import (
     get_project_for_user,
     get_social_account_for_user,
 )
+from app.config import settings
 from app.database import async_session, get_db
 from app.models.auto_chat import AutoChatMessage, AutoChatSession, AutoSessionMaterialSelection
 from app.models.material import Material
@@ -65,6 +71,9 @@ INTRO_MESSAGE = (
     "把素材、参考视频和脚本都放在这里就可以直接一键生成。"
     "左侧会按会话保留历史记录，切换后会恢复该会话的素材、参考视频、方案确认和生成状态。"
 )
+CHAT_STREAM_TIMEOUT_SECONDS = 180
+CHAT_STREAM_HEARTBEAT_SECONDS = 10
+CHAT_ERROR_LOG_PATH = Path(settings.GENERATED_DIR) / "chat_agent_error_log.md"
 
 
 def _utcnow() -> datetime:
@@ -86,6 +95,78 @@ def _safe_json_loads(raw: str | None) -> dict | None:
         return value if isinstance(value, dict) else None
     except json.JSONDecodeError:
         return None
+
+
+def _normalize_chat_reply_content(raw: str | None) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return ""
+
+    normalized = text
+    for _ in range(4):
+        try:
+            parsed = json.loads(normalized)
+        except (json.JSONDecodeError, TypeError):
+            break
+
+        if isinstance(parsed, dict):
+            reply = parsed.get("reply")
+            if isinstance(reply, str) and reply.strip():
+                normalized = reply.strip()
+                continue
+        if isinstance(parsed, list) and parsed:
+            first = parsed[0]
+            if isinstance(first, dict):
+                reply = first.get("reply")
+                if isinstance(reply, str) and reply.strip():
+                    normalized = reply.strip()
+                    continue
+            if isinstance(first, str) and first.strip():
+                normalized = first.strip()
+                continue
+        if isinstance(parsed, str) and parsed.strip():
+            normalized = parsed.strip()
+            continue
+        break
+
+    reply_match = re.search(r'"reply"\s*:\s*"((?:\\.|[^"])*)"', normalized, re.DOTALL)
+    if reply_match:
+        extracted = reply_match.group(1)
+        normalized = extracted
+
+    return normalized.replace("\\n", "\n").replace("\\t", "\t").strip()
+
+
+async def _append_chat_error_log(
+    *,
+    project_id: str,
+    session_id: str,
+    user_id: str,
+    title: str,
+    detail: str,
+    user_message: str | None = None,
+) -> None:
+    timestamp = _utcnow().isoformat()
+    lines = [
+        f"## {title}",
+        f"- timestamp: {timestamp}",
+        f"- project_id: {project_id}",
+        f"- session_id: {session_id}",
+        f"- user_id: {user_id}",
+        f"- detail: {detail.strip() or 'unknown'}",
+    ]
+    if user_message and user_message.strip():
+        lines.append(f"- user_message: {user_message.strip()}")
+    lines.append("")
+
+    content = "\n".join(lines)
+
+    def _write() -> None:
+        CHAT_ERROR_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with CHAT_ERROR_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(content)
+
+    await asyncio.to_thread(_write)
 
 
 def _message_payload_from_record(message: AutoChatMessage) -> AutoChatMessagePayload | None:
@@ -153,15 +234,7 @@ def _execution_to_response(execution: AgentExecution) -> AgentExecutionResponse:
 
 
 def _run_to_response(run: PipelineRun) -> PipelineRunResponse:
-    payload = PipelineRunResponse.model_validate(run).model_dump(mode="json")
-    if run.swarm_state_json:
-        try:
-            payload["swarm_state"] = json.loads(run.swarm_state_json)
-        except json.JSONDecodeError:
-            payload["swarm_state"] = None
-    else:
-        payload["swarm_state"] = None
-    return PipelineRunResponse(**payload)
+    return PipelineRunResponse.model_validate(run)
 
 
 def _derive_status_preview(session: AutoChatSession, latest_message: AutoChatMessage | None, run: PipelineRun | None) -> str:
@@ -173,6 +246,7 @@ def _derive_status_preview(session: AutoChatSession, latest_message: AutoChatMes
             "failed": "失败",
             "cancelled": "已取消",
             "waiting_confirmation": "等待确认方案",
+            "waiting_prompt_review": "等待确认镜头方案",
         }
         return status_map.get(run.status, run.status)
     if latest_message and latest_message.role == "assistant":
@@ -487,6 +561,8 @@ async def _session_detail(
             reference_video_id=session.reference_video_id,
             video_platform=session.video_platform,
             video_no_audio=session.video_no_audio,
+            video_model_no_audio=session.video_no_audio,
+            voiceover_no_audio=session.voiceover_no_audio,
             duration_mode=session.duration_mode,
             video_transition=session.video_transition,
             bgm_mood=session.bgm_mood,
@@ -505,6 +581,60 @@ async def _session_detail(
         recommended_publish_account=recommended_account,
         latest_publish_draft=latest_publish_draft,
     )
+
+
+async def _load_recent_messages(db: AsyncSession, session_id: str, limit: int = 5) -> list[dict[str, str]]:
+    result = await db.execute(
+        select(AutoChatMessage)
+        .where(AutoChatMessage.session_id == session_id)
+        .order_by(AutoChatMessage.created_at.desc(), AutoChatMessage.id.desc())
+        .limit(limit)
+    )
+    messages = list(reversed(result.scalars().all()))
+    return [
+        {
+            "role": message.role,
+            "content": message.content,
+        }
+        for message in messages
+    ]
+
+
+async def _load_session_context(
+    db: AsyncSession,
+    session: AutoChatSession,
+    user: User,
+) -> dict:
+    material_result = await db.execute(
+        select(AutoSessionMaterialSelection)
+        .where(AutoSessionMaterialSelection.session_id == session.id)
+        .order_by(AutoSessionMaterialSelection.sort_order.asc(), AutoSessionMaterialSelection.created_at.asc())
+    )
+    selected_materials = [
+        {
+            "id": item.id,
+            "material_id": item.material_id,
+            "sort_order": item.sort_order,
+        }
+        for item in material_result.scalars().all()
+    ]
+    return {
+        "project_id": session.project_id,
+        "session_id": session.id,
+        "user_id": user.id,
+        "reference_video_id": session.reference_video_id,
+        "background_template_id": session.background_template_id,
+        "draft_script": session.draft_script,
+        "platform": session.video_platform or "generic",
+        "video_no_audio": session.video_no_audio,
+        "video_model_no_audio": session.video_no_audio,
+        "voiceover_no_audio": session.voiceover_no_audio,
+        "duration_mode": session.duration_mode or "fixed",
+        "video_transition": session.video_transition or "none",
+        "bgm_mood": session.bgm_mood or "none",
+        "watermark_id": session.watermark_id,
+        "selected_materials": selected_materials,
+    }
 
 
 @router.get("/api/projects/{project_id}/auto-sessions", response_model=list[AutoChatSessionSummaryResponse])
@@ -590,6 +720,8 @@ async def update_auto_session(
         "reference_video_id",
         "video_platform",
         "video_no_audio",
+        "video_model_no_audio",
+        "voiceover_no_audio",
         "duration_mode",
         "video_transition",
         "bgm_mood",
@@ -598,7 +730,10 @@ async def update_auto_session(
     ):
         value = getattr(req, field)
         if value is not None:
-            setattr(session, field, value)
+            if field == "video_model_no_audio":
+                session.video_no_audio = value
+            else:
+                setattr(session, field, value)
     session.last_activity_at = req.last_activity_at or _utcnow()
     await db.commit()
     await db.refresh(session)
@@ -630,6 +765,168 @@ async def append_auto_session_message(
     await db.commit()
     await db.refresh(message)
     return _message_to_response(message)
+
+
+@router.post("/api/projects/{project_id}/auto-sessions/{session_id}/chat")
+async def chat_with_agent(
+    project_id: str,
+    session_id: str,
+    req: AutoChatMessageCreateRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await get_project_for_user(db, user.id, project_id)
+    session = await get_auto_chat_session_for_user(db, user.id, project_id, session_id)
+    chat_agent = getattr(request.app.state, "chat_agent", None)
+    if chat_agent is None:
+        raise HTTPException(status_code=503, detail="Chat agent is not ready")
+
+    reference_video = await db.get(VideoUpload, session.reference_video_id) if session.reference_video_id else None
+    user_message = AutoChatMessage(
+        session_id=session.id,
+        role="user",
+        title=req.title,
+        content=req.content,
+        payload_json=req.payload.model_dump_json(exclude_none=True) if req.payload else None,
+    )
+    db.add(user_message)
+    session.title = _derive_title(session.title, "user", req.content, reference_video.filename if reference_video else None)
+    session.status_preview = req.title or session.status_preview
+    session.last_activity_at = _utcnow()
+    await db.commit()
+
+    history = await _load_recent_messages(db, session.id)
+    session_context = await _load_session_context(db, session, user)
+    session_context["force_tool"] = req.force_tool
+    session_context["generation_model"] = req.generation_model
+    if req.video_model_no_audio is not None:
+        session_context["video_model_no_audio"] = req.video_model_no_audio
+        session_context["video_no_audio"] = req.video_model_no_audio
+    if req.voiceover_no_audio is not None:
+        session_context["voiceover_no_audio"] = req.voiceover_no_audio
+    session_context["skip_video_generation"] = req.skip_video_generation
+
+    async def event_generator():
+        collected_text: list[str] = []
+        stream = chat_agent.chat_stream(history, session_context)
+
+        async def _persist_assistant_message(content: str) -> dict | None:
+            normalized_content = _normalize_chat_reply_content(content)
+            if not normalized_content:
+                return None
+            async with async_session() as save_db:
+                assistant_message = AutoChatMessage(
+                    session_id=session.id,
+                    role="assistant",
+                    content=normalized_content,
+                )
+                save_db.add(assistant_message)
+                save_session = await save_db.get(AutoChatSession, session.id)
+                if save_session is not None:
+                    save_session.status_preview = "已回复"
+                    save_session.last_activity_at = _utcnow()
+                await save_db.commit()
+                await save_db.refresh(assistant_message)
+                return _message_to_response(assistant_message).model_dump(mode="json")
+
+        next_event_task: asyncio.Task | None = None
+        try:
+            while True:
+                wait_seconds = 0
+                next_event_task = asyncio.create_task(stream.__anext__())
+                try:
+                    while True:
+                        try:
+                            event = await asyncio.wait_for(
+                                asyncio.shield(next_event_task),
+                                timeout=CHAT_STREAM_HEARTBEAT_SECONDS,
+                            )
+                            break
+                        except asyncio.TimeoutError:
+                            wait_seconds += CHAT_STREAM_HEARTBEAT_SECONDS
+                            if wait_seconds >= CHAT_STREAM_TIMEOUT_SECONDS:
+                                next_event_task.cancel()
+                                with suppress(asyncio.CancelledError, Exception):
+                                    await next_event_task
+                                next_event_task = None
+                                raise
+                            yield {
+                                "event": "status",
+                                "data": json.dumps(
+                                    {"content": "请求仍在处理中，正在等待模型或工具返回。"},
+                                    ensure_ascii=False,
+                                ),
+                            }
+                except StopAsyncIteration:
+                    assistant_payload = await _persist_assistant_message("".join(collected_text))
+                    yield {"event": "done", "data": json.dumps({"assistant_message": assistant_payload}, ensure_ascii=False)}
+                    return
+                except asyncio.TimeoutError:
+                    timeout_message = f"对话在 {CHAT_STREAM_TIMEOUT_SECONDS}s 内未返回结果，已自动断开，请稍后重试。"
+                    await _append_chat_error_log(
+                        project_id=project_id,
+                        session_id=session.id,
+                        user_id=user.id,
+                        title="Chat Timeout",
+                        detail=timeout_message,
+                        user_message=req.content,
+                    )
+                    assistant_payload = await _persist_assistant_message(timeout_message)
+                    yield {"event": "text", "data": json.dumps({"content": timeout_message}, ensure_ascii=False)}
+                    yield {"event": "done", "data": json.dumps({"assistant_message": assistant_payload}, ensure_ascii=False)}
+                    return
+
+                if event.type == "text":
+                    collected_text.append(event.content)
+                    yield {"event": "text", "data": json.dumps({"content": event.content}, ensure_ascii=False)}
+                elif event.type == "status":
+                    yield {"event": "status", "data": json.dumps({"content": event.content}, ensure_ascii=False)}
+                elif event.type == "tool_call":
+                    yield {
+                        "event": "tool_call",
+                        "data": json.dumps(
+                            {"name": event.tool_name, "args": event.tool_args},
+                            ensure_ascii=False,
+                        ),
+                    }
+                elif event.type == "tool_result":
+                    yield {
+                        "event": "tool_result",
+                        "data": json.dumps(
+                            {"name": event.tool_name, "result": event.tool_result},
+                            ensure_ascii=False,
+                        ),
+                    }
+                elif event.type == "done":
+                    assistant_payload = await _persist_assistant_message("".join(collected_text))
+                    yield {"event": "done", "data": json.dumps({"assistant_message": assistant_payload}, ensure_ascii=False)}
+                    return
+        except asyncio.CancelledError:
+            # Client disconnected — clean up pending __anext__ task and close the generator
+            if next_event_task is not None and not next_event_task.done():
+                next_event_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await next_event_task
+            with suppress(Exception):
+                await stream.aclose()
+            raise
+        except Exception as exc:
+            error_message = f"Chat stream error: {exc}"
+            await _append_chat_error_log(
+                project_id=project_id,
+                session_id=session.id,
+                user_id=user.id,
+                title="Chat Error",
+                detail=error_message,
+                user_message=req.content,
+            )
+            assistant_payload = await _persist_assistant_message("对话出现异常，已自动断开，请稍后重试。")
+            yield {"event": "text", "data": json.dumps({"content": "对话出现异常，已自动断开，请稍后重试。"}, ensure_ascii=False)}
+            yield {"event": "done", "data": json.dumps({"assistant_message": assistant_payload}, ensure_ascii=False)}
+            return
+
+    return EventSourceResponse(event_generator())
 
 
 @router.patch("/api/projects/{project_id}/auto-sessions/{session_id}/messages/{message_id}", response_model=AutoChatMessageResponse)

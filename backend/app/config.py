@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    PIPELINE_ENGINE: str = "langgraph"  # pipeline | langgraph | swarm
+    PIPELINE_ENGINE: str = "langgraph"  # pipeline | langgraph
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/vidgen.db"
     UPLOAD_DIR: str = "./data/uploads"
     MATERIALS_ROOT: str = "../materials"
@@ -30,10 +30,15 @@ class Settings(BaseSettings):
     # Volcengine Ark / Seedance
     ARK_API_KEY: str = ""
     ARK_BASE_URL: str = "https://ark.cn-beijing.volces.com/api/v3"
+    VIDEO_GENERATION_MODEL: str = "seedance1.5-pro"  # seedance1.5-pro | seedance2.0 | kling
     SEEDANCE_MODEL: str = "doubao-seedance-1-5-pro-251215"
+    SEEDANCE_20_MODEL: str = "doubao-seedance-2-0-260128"
     SEEDANCE_DURATION: int = 5
-    SEEDANCE_SUPPORTED_DURATIONS: list[int] = [5]  # each image generates exactly 5s video
-    SEEDANCE_RESOLUTION: str = "720p"
+    SEEDANCE_SUPPORTED_DURATIONS: list[int] = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]  # supported generation durations for the model
+    # Range within which generation_duration_seconds is clamped before snapping to model
+    VIDEO_GEN_MIN_DURATION_SECONDS: float = 4.0
+    VIDEO_GEN_MAX_DURATION_SECONDS: float = 15.0
+    SEEDANCE_RESOLUTION: str = "480p"
     # Platform target resolutions (width x height)
     PLATFORM_RESOLUTIONS: dict[str, tuple[int, int]] = {
         "generic": (1280, 720),      # 16:9 landscape
@@ -52,13 +57,13 @@ class Settings(BaseSettings):
     LTX_API_KEY: str = ""
     LTX_API_URL: str = ""
 
-    USE_MOCK_ANALYZER: bool = True
-    USE_MOCK_LLM: bool = True
-    USE_MOCK_GENERATOR: bool = True
-    USE_MOCK_COMPOSITOR: bool = True
+    USE_MOCK_ANALYZER: bool = False
+    USE_MOCK_LLM: bool = False
+    USE_MOCK_GENERATOR: bool = False
+    USE_MOCK_COMPOSITOR: bool = False
     USE_MOCK_LIPSYNC: bool = True
-    USE_MOCK_TTS: bool = True
-    USE_MOCK_VIDEO_EDITOR: bool = True
+    USE_MOCK_TTS: bool = False
+    USE_MOCK_VIDEO_EDITOR: bool = False
 
     TTS_API_KEY: str = ""
     TTS_API_URL: str = ""
@@ -78,7 +83,10 @@ class Settings(BaseSettings):
     # Per-shot video generation polling timeout (seconds). 600 = 10 min.
     VIDEO_GENERATION_TIMEOUT_SECONDS: int = 600
     # Max concurrent shot generation tasks (prevents API rate-limit hammering).
-    MAX_CONCURRENT_SHOTS: int = 5
+    MAX_CONCURRENT_SHOTS: int = 1
+    # Retry transient transport failures from external image-to-video APIs.
+    VIDEO_GENERATION_HTTP_RETRIES: int = 2
+    VIDEO_GENERATION_HTTP_RETRY_BACKOFF_SECONDS: float = 2.0
     # Overall agent execution timeout (wraps the agent's execute() call).
     AGENT_TIMEOUT_SECONDS: int = 900
 
@@ -93,17 +101,32 @@ class Settings(BaseSettings):
     # ── Human-in-the-Loop ────────────────────────────────────────────────────
     # When True, the pipeline pauses after PromptEngineer for user review
     # before proceeding to audio/video generation.
-    HUMAN_IN_LOOP_PROMPT_REVIEW: bool = False
+    HUMAN_IN_LOOP_PROMPT_REVIEW: bool = True
 
     # ── Agent Memory ─────────────────────────────────────────────────────────
     # Persist cross-run user preferences (voice params, platform style, etc.)
     AGENT_MEMORY_ENABLED: bool = True
 
+    # ── Mem0 Semantic Memory ──────────────────────────────────────────────────
+    # Semantic memory layer using Mem0 + Qdrant (embedded, no separate deployment)
+    MEM0_ENABLED: bool = True
+    MEM0_EMBEDDING_MODEL: str = "text-embedding-v3"  # dashscope embedding model
+    MEM0_EMBEDDING_DIMS: int = 1024
+    MEM0_SEARCH_LIMIT: int = 5
+
     # ── Security: input validation ───────────────────────────────────────────
     MAX_UPLOAD_SIZE_MB: int = 500
     MAX_IMAGE_SIZE_MB: int = 50
+    MAX_AUDIO_SIZE_MB: int = 100
+    MAX_TIMELINE_ASSET_SIZE_MB: int = 500
     ALLOWED_IMAGE_TYPES: list[str] = ["image/jpeg", "image/png", "image/webp", "image/gif"]
     ALLOWED_VIDEO_TYPES: list[str] = ["video/mp4", "video/quicktime", "video/webm", "video/avi"]
+    ALLOWED_AUDIO_TYPES: list[str] = ["audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4", "audio/aac", "audio/ogg", "audio/flac", "audio/webm"]
+    ALLOWED_SUBTITLE_TYPES: list[str] = ["text/plain", "text/vtt", "application/x-subrip", "application/octet-stream"]
+
+    # ── Logging ──────────────────────────────────────────────────────────────
+    LOG_LEVEL: str = "INFO"
+    LOG_FORMAT: str = "text"  # "text" (dev console) | "json" (production)
 
     CORS_ALLOWED_ORIGINS: str = (
         "http://localhost:5173,"

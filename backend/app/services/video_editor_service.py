@@ -94,6 +94,12 @@ class RealVideoEditorService(VideoEditorService):
             if duration_mode == "fixed" and shot_durations
             else None
         )
+        video_model_no_audio = context_data.get("video_model_no_audio", True)
+        # Preserve model-generated audio only when explicitly enabled AND no TTS voiceover.
+        # TTS always wins; xfade transitions strip audio (complex audio chaining not supported).
+        has_tts_audio = bool(audio_path and os.path.exists(audio_path))
+        preserve_model_audio = not video_model_no_audio and not has_tts_audio
+
         subtitle_segments = _parse_srt(subtitle_path)
 
         schema = {
@@ -126,15 +132,39 @@ class RealVideoEditorService(VideoEditorService):
         if not clip_context:
             clip_context = [{"shot_idx": idx, "prompt": "", "script_segment": "", "subtitle_text": ""} for idx in range(len(video_clips))]
 
-        plan, usage = await self.llm.generate_structured(
-            system_prompt=VIDEO_EDITOR_SYSTEM_PROMPT,
-            user_prompt=str({"clips": clip_context, "subtitle_segments": subtitle_segments}),
-            schema=schema,
-        )
-        ordered_indices = _extract_ordered_indices(plan, len(video_clips))
-        if sorted(ordered_indices) != list(range(len(video_clips))):
-            logger.warning("video_editor got invalid ordered_indices=%s, fallback to default order", ordered_indices)
+        # Skip LLM ordering when there are no subtitles (no-audio scenario) —
+        # the shot order from the director is canonical and LLM can't add value.
+        has_subtitles = bool(subtitle_segments)
+        if has_subtitles:
+            try:
+                plan, usage = await self.llm.generate_structured(
+                    system_prompt=VIDEO_EDITOR_SYSTEM_PROMPT,
+                    user_prompt=str({"clips": clip_context, "subtitle_segments": subtitle_segments}),
+                    schema=schema,
+                )
+                ordered_indices = _extract_ordered_indices(plan, len(video_clips))
+                if sorted(ordered_indices) != list(range(len(video_clips))):
+                    logger.warning("video_editor got invalid ordered_indices=%s, fallback to default order", ordered_indices)
+                    ordered_indices = list(range(len(video_clips)))
+            except Exception as exc:
+                logger.warning("video_editor LLM ordering failed (%s), using default order", exc)
+                ordered_indices = list(range(len(video_clips)))
+                usage = {}
+        else:
             ordered_indices = list(range(len(video_clips)))
+            usage = {}
+
+        # Build a per-clip-index duration map so trimming is correct even
+        # if ordered_indices reorders the clips.
+        clips_duration_map: dict[int, float] = {}
+        for ci, clip in enumerate(video_clips_data):
+            clip_item = clip if isinstance(clip, dict) else {}
+            # Prefer duration_seconds (final-cut time) from clip record
+            d = clip_item.get("duration_seconds")
+            if d is None and ci < len(shot_durations):
+                d = shot_durations[ci]
+            if d is not None:
+                clips_duration_map[ci] = float(d)
 
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         temp_dir = tempfile.mkdtemp(prefix="vidgen_edit_")
@@ -148,14 +178,21 @@ class RealVideoEditorService(VideoEditorService):
                     if output_idx < len(subtitle_segments):
                         duration = max(subtitle_segments[output_idx]["duration_s"], 1.0)
                 else:
-                    if output_idx < len(shot_durations):
-                        duration = max(float(shot_durations[output_idx]), 1.0)
+                    # Use per-clip duration from clips_duration_map (keyed by original clip_idx)
+                    # so trimming is correct even when LLM reorders clips.
+                    clip_dur = clips_duration_map.get(clip_idx)
+                    if clip_dur is not None:
+                        duration = max(clip_dur, 1.0)
                     elif output_idx < len(subtitle_segments):
                         duration = max(subtitle_segments[output_idx]["duration_s"], 1.0)
                 ffmpeg_args = [self.ffmpeg_bin, "-y", "-i", local_clip]
                 if duration:
                     ffmpeg_args.extend(["-t", f"{duration:.2f}"])
-                ffmpeg_args.extend(["-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", clip_out])
+                if preserve_model_audio:
+                    ffmpeg_args.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"])
+                else:
+                    ffmpeg_args.extend(["-an", "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+                ffmpeg_args.append(clip_out)
                 return_code, _, stderr = await run_subprocess(*ffmpeg_args)
                 if return_code != 0:
                     raise RuntimeError(f"ffmpeg clip process failed: {stderr}")
@@ -165,11 +202,13 @@ class RealVideoEditorService(VideoEditorService):
 
             if transition_type != "none" and len(processed_paths) >= 2:
                 # ── xfade transitions between clips ──
+                # xfade filter only handles video; audio cannot be preserved here.
                 xfade_name = _XFADE_MAP.get(transition_type, "fade")
                 merged_path = await _concat_with_xfade(
                     self.ffmpeg_bin, processed_paths, merged_path,
                     xfade_name, transition_dur, run_subprocess,
                 )
+                merged_has_audio = False
             else:
                 # ── Simple concat (no transitions) ──
                 concat_file = os.path.join(temp_dir, "concat.txt")
@@ -177,23 +216,17 @@ class RealVideoEditorService(VideoEditorService):
                     "\n".join(f"file '{Path(p).as_posix()}'" for p in processed_paths),
                     encoding="utf-8",
                 )
-                return_code, _, stderr = await run_subprocess(
-                    self.ffmpeg_bin,
-                    "-y",
-                    "-f",
-                    "concat",
-                    "-safe",
-                    "0",
-                    "-i",
-                    concat_file,
-                    "-c:v",
-                    "libx264",
-                    "-pix_fmt",
-                    "yuv420p",
-                    merged_path,
-                )
+                concat_cmd = [
+                    self.ffmpeg_bin, "-y", "-f", "concat", "-safe", "0",
+                    "-i", concat_file, "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                ]
+                if preserve_model_audio:
+                    concat_cmd.extend(["-c:a", "aac"])
+                concat_cmd.append(merged_path)
+                return_code, _, stderr = await run_subprocess(*concat_cmd)
                 if return_code != 0:
                     raise RuntimeError(f"ffmpeg concat failed: {stderr}")
+                merged_has_audio = preserve_model_audio
 
             # ── Probe merged video duration ──
             import logging as _logging
@@ -243,28 +276,48 @@ class RealVideoEditorService(VideoEditorService):
                             _log.warning(f"Audio trim failed: {err}")
 
             # ── Mix background music if requested ──
-            if bgm_mood != "none" and actual_audio_path and os.path.exists(actual_audio_path):
+            if bgm_mood != "none":
                 bgm_path = _find_bgm(bgm_mood)
                 if bgm_path:
-                    mixed_audio = os.path.join(temp_dir, "audio_with_bgm.mp3")
                     bgm_dur = effective_dur_s or video_dur_s or 30
-                    rc, _, err = await run_subprocess(
-                        self.ffmpeg_bin, "-y",
-                        "-i", actual_audio_path,
-                        "-stream_loop", "-1", "-i", bgm_path,
-                        "-filter_complex",
-                        f"[1:a]volume={bgm_volume:.2f},afade=t=in:d=1.5,afade=t=out:st={max(bgm_dur - 2, 0):.1f}:d=2[bgm];"
-                        f"[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[out]",
-                        "-map", "[out]",
-                        "-t", f"{bgm_dur:.3f}",
-                        "-c:a", "libmp3lame", "-q:a", "2",
-                        mixed_audio,
-                    )
-                    if rc == 0:
-                        actual_audio_path = mixed_audio
-                        _log.info(f"Mixed BGM ({bgm_mood}) at volume {bgm_volume}")
+                    if actual_audio_path and os.path.exists(actual_audio_path):
+                        mixed_audio = os.path.join(temp_dir, "audio_with_bgm.mp3")
+                        rc, _, err = await run_subprocess(
+                            self.ffmpeg_bin, "-y",
+                            "-i", actual_audio_path,
+                            "-stream_loop", "-1", "-i", bgm_path,
+                            "-filter_complex",
+                            f"[1:a]volume={bgm_volume:.2f},afade=t=in:d=1.5,afade=t=out:st={max(bgm_dur - 2, 0):.1f}:d=2[bgm];"
+                            f"[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[out]",
+                            "-map", "[out]",
+                            "-t", f"{bgm_dur:.3f}",
+                            "-c:a", "libmp3lame", "-q:a", "2",
+                            mixed_audio,
+                        )
+                        if rc == 0:
+                            actual_audio_path = mixed_audio
+                            _log.info(f"Mixed BGM ({bgm_mood}) at volume {bgm_volume}")
+                        else:
+                            _log.warning(f"BGM mixing failed, continuing without: {err}")
+                    elif not merged_has_audio:
+                        bgm_only_audio = os.path.join(temp_dir, "bgm_only.mp3")
+                        fade_out_start = max(bgm_dur - 2, 0)
+                        rc, _, err = await run_subprocess(
+                            self.ffmpeg_bin, "-y",
+                            "-stream_loop", "-1", "-i", bgm_path,
+                            "-af",
+                            f"volume={bgm_volume:.2f},afade=t=in:d=1.5,afade=t=out:st={fade_out_start:.1f}:d=2",
+                            "-t", f"{bgm_dur:.3f}",
+                            "-c:a", "libmp3lame", "-q:a", "2",
+                            bgm_only_audio,
+                        )
+                        if rc == 0:
+                            actual_audio_path = bgm_only_audio
+                            _log.info(f"Created BGM-only audio ({bgm_mood}) at volume {bgm_volume}")
+                        else:
+                            _log.warning(f"BGM-only audio failed, continuing silent: {err}")
                     else:
-                        _log.warning(f"BGM mixing failed, continuing without: {err}")
+                        _log.info("Skipping BGM mix because model audio is already preserved")
 
             # Scale subtitle timings if audio was sped up
             timed_segments = _parse_srt_timed(subtitle_path)
@@ -279,6 +332,7 @@ class RealVideoEditorService(VideoEditorService):
                 ]
                 for seg in timed_segments:
                     seg["end_s"] = min(seg["end_s"], effective_dur_s)
+            has_audio = bool(actual_audio_path and os.path.exists(actual_audio_path))
 
             # Burn subtitles into the video
             if timed_segments:
@@ -294,24 +348,35 @@ class RealVideoEditorService(VideoEditorService):
                     vid_w, vid_h = int(dim_match.group(1)), int(dim_match.group(2))
 
                 sub_inputs, filter_complex = _render_subtitle_overlays(
-                    timed_segments, vid_w, vid_h, temp_dir,
+                    timed_segments,
+                    vid_w,
+                    vid_h,
+                    temp_dir,
+                    first_overlay_input_idx=2 if has_audio else 1,
                 )
-                mux_args = [self.ffmpeg_bin, "-y", "-i", merged_path, "-i", actual_audio_path]
+                mux_args = [self.ffmpeg_bin, "-y", "-i", merged_path]
+                if has_audio:
+                    mux_args.extend(["-i", actual_audio_path])
                 for png_path in sub_inputs:
                     mux_args.extend(["-i", png_path])
                 mux_args.extend([
                     "-filter_complex", filter_complex,
                     "-map", "[vout]",
-                    "-map", "1:a:0",
                     "-c:v", "libx264",
                     "-pix_fmt", "yuv420p",
-                    "-c:a", "aac",
-                    "-shortest",
                 ])
+                if has_audio:
+                    # TTS audio as separate input (stream 1)
+                    mux_args.extend(["-map", "1:a:0", "-c:a", "aac", "-shortest"])
+                elif merged_has_audio:
+                    # Model audio embedded in merged video (stream 0)
+                    mux_args.extend(["-map", "0:a:0", "-c:a", "aac", "-shortest"])
+                else:
+                    mux_args.append("-an")
                 if target_duration_s:
                     mux_args.extend(["-t", f"{target_duration_s:.3f}"])
                 mux_args.append(output_path)
-            else:
+            elif has_audio:
                 mux_args = [
                     self.ffmpeg_bin, "-y",
                     "-i", merged_path,
@@ -319,6 +384,27 @@ class RealVideoEditorService(VideoEditorService):
                     "-c:v", "copy",
                     "-c:a", "aac",
                     "-shortest",
+                ]
+                if target_duration_s:
+                    mux_args.extend(["-t", f"{target_duration_s:.3f}"])
+                mux_args.append(output_path)
+            elif merged_has_audio:
+                # Model audio in merged video — just copy it through
+                mux_args = [
+                    self.ffmpeg_bin, "-y",
+                    "-i", merged_path,
+                    "-c:v", "copy",
+                    "-c:a", "copy",
+                ]
+                if target_duration_s:
+                    mux_args.extend(["-t", f"{target_duration_s:.3f}"])
+                mux_args.append(output_path)
+            else:
+                mux_args = [
+                    self.ffmpeg_bin, "-y",
+                    "-i", merged_path,
+                    "-c:v", "copy",
+                    "-an",
                 ]
                 if target_duration_s:
                     mux_args.extend(["-t", f"{target_duration_s:.3f}"])
@@ -479,7 +565,11 @@ def _parse_srt_timed(subtitle_path: str) -> list[dict]:
 
 
 def _render_subtitle_overlays(
-    segments: list[dict], width: int, height: int, temp_dir: str
+    segments: list[dict],
+    width: int,
+    height: int,
+    temp_dir: str,
+    first_overlay_input_idx: int = 2,
 ) -> tuple[list[str], str]:
     """Render each subtitle segment as a transparent PNG and build ffmpeg overlay filter.
 
@@ -539,12 +629,12 @@ def _render_subtitle_overlays(
         img.save(png_path)
         png_paths.append(png_path)
 
-    # Build filter_complex: chain overlays with enable=between(t,start,end)
-    # Inputs: [0:v] = video, [1:a] = audio, [2] [3] ... = subtitle PNGs
+    # Build filter_complex: chain overlays with enable=between(t,start,end).
+    # Inputs: [0:v] = video, optional [1:a] = audio, then subtitle PNGs.
     parts = []
     prev = "[0:v]"
     for i, seg in enumerate(segments):
-        input_idx = i + 2  # 0=video, 1=audio, 2..N=PNGs
+        input_idx = i + first_overlay_input_idx
         out_label = f"[v{i}]" if i < len(segments) - 1 else "[vout]"
         start = f"{seg['start_s']:.3f}"
         end = f"{seg['end_s']:.3f}"

@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -12,6 +12,20 @@ from app.database import Base
 
 class VideoDelivery(Base):
     __tablename__ = "video_deliveries"
+    __table_args__ = (
+        CheckConstraint(
+            "action_type IN ('save', 'publish')",
+            name="action_type",
+        ),
+        CheckConstraint(
+            "platform IN ('repository', 'douyin')",
+            name="platform",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'saved', 'published', 'failed')",
+            name="status",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
@@ -25,7 +39,7 @@ class VideoDelivery(Base):
     action_type: Mapped[str] = mapped_column(String, nullable=False)  # save | publish
     platform: Mapped[str] = mapped_column(String, nullable=False)  # repository | douyin
     status: Mapped[str] = mapped_column(String, default="pending", nullable=False)  # pending | saved | published | failed
-    social_account_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("social_accounts.id"), nullable=True)
+    social_account_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("social_accounts.id"), index=True, nullable=True)
     title: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     draft_payload_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

@@ -6,8 +6,8 @@ import type {
   PipelineUsageSummary,
   GenerateScriptResponse,
   PipelineDeliveryInfo,
-  PublishDraft,
   VideoDeliveryRecord,
+  RepositoryAsset,
 } from '../types'
 
 export const launchPipeline = (projectId: string, config: PipelineConfig) =>
@@ -27,6 +27,9 @@ export const getPipelineUsage = (projectId: string, runId: string) =>
 
 export const getPipelineDelivery = (projectId: string, runId: string) =>
   api.get<PipelineDeliveryInfo>(`/api/projects/${projectId}/pipeline/${runId}/delivery`).then(r => r.data)
+
+export const getPipelineArtifacts = (projectId: string, runId: string) =>
+  api.get<RepositoryAsset[]>(`/api/projects/${projectId}/pipeline/${runId}/artifacts`).then(r => r.data)
 
 export const savePipelineVideo = (
   projectId: string,
@@ -55,9 +58,6 @@ export const cancelPipeline = (projectId: string, runId: string) =>
 export const retryFailedAgent = (projectId: string, runId: string) =>
   api.post<PipelineRun>(`/api/projects/${projectId}/pipeline/${runId}/retry-agent`).then(r => r.data)
 
-export const sendSwarmMessage = (projectId: string, runId: string, message: string) =>
-  api.post(`/api/projects/${projectId}/pipeline/${runId}/message`, { message }).then(r => r.data)
-
 export const confirmReplicationPlan = (
   projectId: string,
   runId: string,
@@ -84,9 +84,50 @@ export const preflightCheck = (projectId: string, data: { script: string; image_
 export const generateScript = (projectId: string, imageIds: string[]) =>
   api.post<GenerateScriptResponse>(`/api/projects/${projectId}/generate-script`, { image_ids: imageIds }).then(r => r.data)
 
+export interface ShotEdit {
+  shot_idx: number
+  script_segment?: string
+  video_prompt?: string
+  duration_seconds?: number
+}
+
+export interface CostEstimate {
+  estimated_total_cny: number
+  breakdown: { video_gen: number; tts: number; llm: number; bgm: number }
+  shot_count: number
+  total_generation_seconds: number
+  warning?: string | null
+}
+
+export const confirmPromptReview = (
+  projectId: string,
+  runId: string,
+  editedShots?: ShotEdit[],
+) =>
+  api.post(`/api/projects/${projectId}/pipeline/${runId}/confirm-prompt-review`, {
+    edited_shots: editedShots ?? null,
+  }).then(r => r.data)
+
+export const retryShotIndices = (projectId: string, runId: string, shotIndices: number[]) =>
+  api.post(`/api/projects/${projectId}/pipeline/${runId}/retry-shot`, {
+    shot_indices: shotIndices,
+  }).then(r => r.data)
+
+export const estimateCost = (
+  projectId: string,
+  payload: {
+    shot_plan: object[]
+    model?: string
+    voiceover_no_audio?: boolean
+    tts_char_count?: number
+    bgm_mood?: string
+  },
+) =>
+  api.post<CostEstimate>(`/api/projects/${projectId}/pipeline/estimate-cost`, payload).then(r => r.data)
+
 /**
  * Open an SSE stream for a pipeline run.
  * Returns an EventSource; caller should listen for 'update', 'done', 'error' events.
  */
 export const streamPipeline = (projectId: string, runId: string): EventSource =>
-  new EventSource(`/api/projects/${projectId}/pipeline/${runId}/stream`)
+  new EventSource(`/api/projects/${projectId}/pipeline/${runId}/stream`, { withCredentials: true })

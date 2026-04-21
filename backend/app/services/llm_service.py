@@ -32,6 +32,17 @@ class LLMService(ABC):
         ...
 
     @abstractmethod
+    async def generate_text(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        image_paths: Optional[list[str]] = None,
+        video_paths: Optional[list[str]] = None,
+    ) -> tuple[str, dict[str, int]]:
+        ...
+
+    @abstractmethod
     async def generate_with_tools(
         self,
         *,
@@ -91,6 +102,17 @@ class MockLLMService(LLMService):
     ) -> tuple[dict[str, Any], dict[str, int]]:
         await asyncio.sleep(0.2)
         return {}, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    async def generate_text(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        image_paths: Optional[list[str]] = None,
+        video_paths: Optional[list[str]] = None,
+    ) -> tuple[str, dict[str, int]]:
+        await asyncio.sleep(0.2)
+        return "这是一段模拟视频分析报告。", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     async def generate_with_tools(
         self,
@@ -162,8 +184,8 @@ class RealLLMService(LLMService):
         self.client = QwenClient(api_key=api_key, base_url=api_url, model=model)
 
     async def chat_stream(self, messages: list[dict]) -> AsyncIterator[str]:
-        flattened = "\n".join(m.get("content", "") for m in messages)
-        yield flattened
+        async for chunk in self.client.chat_stream_text(messages=messages):
+            yield chunk
 
     async def generate_prompts(self, context: dict) -> list[dict]:
         schema = {
@@ -207,6 +229,21 @@ class RealLLMService(LLMService):
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             response_schema=schema,
+            image_paths=image_paths,
+            video_paths=video_paths,
+        )
+
+    async def generate_text(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        image_paths: Optional[list[str]] = None,
+        video_paths: Optional[list[str]] = None,
+    ) -> tuple[str, dict[str, int]]:
+        return await self.client.chat_text(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
             image_paths=image_paths,
             video_paths=video_paths,
         )

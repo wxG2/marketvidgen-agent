@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable
 
-from sqlalchemy import inspect, text
 from sqlalchemy import event
-from sqlalchemy.engine import Connection
+from sqlalchemy import MetaData
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
@@ -38,8 +36,17 @@ if _is_sqlite:
             cursor.close()
 
 
+NAMING_CONVENTION = {
+    "ix": "ix_%(table_name)s_%(column_0_N_name)s",
+    "uq": "uq_%(table_name)s_%(column_0_N_name)s",
+    "ck": "ck_%(table_name)s_%(constraint_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_N_name)s_%(referred_table_name)s",
+    "pk": "pk_%(table_name)s",
+}
+
+
 class Base(DeclarativeBase):
-    pass
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
 
 async def get_db():
@@ -50,39 +57,3 @@ async def get_db():
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(_migrate_legacy_schema)
-
-
-def _migrate_legacy_schema(conn: Connection) -> None:
-    inspector = inspect(conn)
-    existing_tables = set(inspector.get_table_names())
-
-    required_columns: dict[str, Iterable[tuple[str, str]]] = {
-        "projects": (("user_id", "VARCHAR"),),
-        "pipeline_runs": (
-            ("user_id", "VARCHAR"),
-            ("session_id", "VARCHAR"),
-            ("artifacts_snapshot", "TEXT"),
-        ),
-        "materials": (("user_id", "VARCHAR"),),
-        "prompt_messages": (("user_id", "VARCHAR"),),
-        "prompts": (("user_id", "VARCHAR"),),
-        "video_uploads": (("session_id", "VARCHAR"),),
-        "video_deliveries": (
-            ("social_account_id", "VARCHAR"),
-            ("draft_payload_json", "TEXT"),
-            ("external_status", "VARCHAR"),
-            ("platform_error_code", "VARCHAR"),
-            ("submitted_at", "DATETIME"),
-            ("published_at", "DATETIME"),
-        ),
-    }
-
-    for table_name, columns in required_columns.items():
-        if table_name not in existing_tables:
-            continue
-        existing_cols = {col["name"] for col in inspector.get_columns(table_name)}
-        for column_name, ddl in columns:
-            if column_name in existing_cols:
-                continue
-            conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl}"))

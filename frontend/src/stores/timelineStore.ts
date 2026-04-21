@@ -1,4 +1,4 @@
-import { create } from 'zustand'
+import { reactive } from 'vue'
 
 export type TrackType = 'video' | 'audio' | 'subtitle'
 
@@ -17,29 +17,32 @@ export interface TLClip {
   filename: string | null
 }
 
-interface TimelineStore {
-  clips: TLClip[]
-  setClips: (clips: TLClip[]) => void
-  addClip: (clip: TLClip) => void
-  removeClip: (id: string) => void
-  updateClip: (id: string, data: Partial<TLClip>) => void
-  zoomLevel: number
-  setZoomLevel: (z: number) => void
-  playheadMs: number
-  setPlayheadMs: (ms: number) => void
+export const timelineStore = reactive({
+  clips: [] as TLClip[],
+  zoomLevel: 100,
+  playheadMs: 0,
+})
+
+export function setClips(clips: TLClip[]) {
+  timelineStore.clips = clips
 }
 
-export const useTimelineStore = create<TimelineStore>((set) => ({
-  clips: [],
-  setClips: (clips) => set({ clips }),
-  addClip: (clip) => set((s) => ({ clips: [...s.clips, clip] })),
-  removeClip: (id) => set((s) => ({ clips: s.clips.filter((c) => c.id !== id) })),
-  updateClip: (id, data) =>
-    set((s) => ({
-      clips: s.clips.map((c) => (c.id === id ? { ...c, ...data } : c)),
-    })),
-  zoomLevel: 100,
-  setZoomLevel: (zoomLevel) => set({ zoomLevel }),
-  playheadMs: 0,
-  setPlayheadMs: (playheadMs) => set({ playheadMs }),
-}))
+export function addClip(clip: TLClip) {
+  timelineStore.clips.push(clip)
+}
+
+export function removeClip(id: string) {
+  timelineStore.clips = timelineStore.clips.filter((clip) => clip.id !== id)
+}
+
+export function updateClip(id: string, data: Partial<TLClip>) {
+  timelineStore.clips = timelineStore.clips.map((clip) => (clip.id === id ? { ...clip, ...data } : clip))
+}
+
+export function setZoomLevel(zoomLevel: number) {
+  timelineStore.zoomLevel = zoomLevel
+}
+
+export function setPlayheadMs(playheadMs: number) {
+  timelineStore.playheadMs = playheadMs
+}

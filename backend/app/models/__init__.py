@@ -16,7 +16,21 @@ from app.models.social_account import SocialAccount
 from app.models.usage import ModelUsage
 from app.models.auto_chat import AutoChatSession, AutoChatMessage, AutoSessionMaterialSelection
 from app.models.agent_memory import AgentMemory
+from app.models.agent_state import (
+    AgentThread,
+    AgentMessage,
+    AgentRun,
+    AgentStep,
+    AgentCheckpoint,
+    ToolCall,
+    PromptVersion,
+    ModelCall,
+    RunEvent,
+    RetrievalDocument,
+)
 from app.models.repository_asset import RepositoryAsset
+from app.models.api_key import ApiKey
+from app.models.external_video_job import ExternalVideoJob
 
 __all__ = [
     "User", "UserSession",
@@ -30,5 +44,8 @@ __all__ = [
     "ModelUsage",
     "AutoChatSession", "AutoChatMessage", "AutoSessionMaterialSelection",
     "AgentMemory",
+    "AgentThread", "AgentMessage", "AgentRun", "AgentStep", "AgentCheckpoint",
+    "ToolCall", "PromptVersion", "ModelCall", "RunEvent", "RetrievalDocument",
     "RepositoryAsset",
+    "ApiKey", "ExternalVideoJob",
 ]

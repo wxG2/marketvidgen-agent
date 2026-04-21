@@ -13,6 +13,7 @@ from app.models.social_account import SocialAccount
 from app.models.user import User
 from app.schemas.social_account import SocialAccountConnectResponse, SocialAccountResponse
 from app.services.social_accounts import (
+    DouyinOAuthConfigurationError,
     build_douyin_authorization_url,
     ensure_active_douyin_account,
     exchange_douyin_code,
@@ -41,7 +42,11 @@ async def list_social_accounts(
 async def connect_douyin_social_account(
     user: User = Depends(get_current_user),
 ):
-    return SocialAccountConnectResponse(authorization_url=build_douyin_authorization_url(user.id))
+    try:
+        authorization_url = build_douyin_authorization_url(user.id)
+    except DouyinOAuthConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return SocialAccountConnectResponse(authorization_url=authorization_url)
 
 
 @router.get("/api/social-accounts/douyin/callback")

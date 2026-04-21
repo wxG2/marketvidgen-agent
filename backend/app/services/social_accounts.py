@@ -6,7 +6,7 @@ import hmac
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import httpx
 from sqlalchemy import select
@@ -16,8 +16,18 @@ from app.config import settings
 from app.models.social_account import SocialAccount
 
 
+class DouyinOAuthConfigurationError(RuntimeError):
+    """Raised when the server cannot start a valid Douyin OAuth flow."""
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _ensure_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _state_secret() -> str:
@@ -45,6 +55,32 @@ def parse_scopes(scopes: str | None) -> list[str]:
     if not scopes:
         return []
     return [item.strip() for item in scopes.split(",") if item.strip()]
+
+
+def validate_douyin_oauth_config() -> None:
+    missing = [
+        name
+        for name, value in (
+            ("DOUYIN_CLIENT_KEY", settings.DOUYIN_CLIENT_KEY),
+            ("DOUYIN_CLIENT_SECRET", settings.DOUYIN_CLIENT_SECRET),
+        )
+        if not value
+    ]
+    if missing:
+        raise DouyinOAuthConfigurationError(
+            "抖音 OAuth 尚未配置完整：请在 .env 中填写 "
+            f"{'、'.join(missing)}。抖音扫码授权页会由开放平台展示二维码，"
+            "但生成扫码 URL 仍需要网站应用的 Client Key，扫码回调后换取 access_token 仍需要 Client Secret。"
+        )
+
+    redirect_uri = settings.DOUYIN_REDIRECT_URI.strip()
+    parsed = urlparse(redirect_uri)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise DouyinOAuthConfigurationError(
+            "DOUYIN_REDIRECT_URI 必须是已在抖音开放平台网站应用中登记的 HTTPS 回调地址。"
+            "抖音开放平台不会接受本地 http://127.0.0.1 回调；本地开发请使用公网 HTTPS 隧道，"
+            "或配置部署环境的 HTTPS 回调地址。"
+        )
 
 
 def build_douyin_oauth_state(user_id: str) -> str:
@@ -75,8 +111,7 @@ def verify_douyin_oauth_state(state: str, *, max_age_seconds: int = 900) -> dict
 
 
 def build_douyin_authorization_url(user_id: str) -> str:
-    if not settings.DOUYIN_CLIENT_KEY or not settings.DOUYIN_CLIENT_SECRET:
-        raise RuntimeError("抖音 OAuth 尚未配置，请先填写 DOUYIN_CLIENT_KEY 和 DOUYIN_CLIENT_SECRET。")
+    validate_douyin_oauth_config()
 
     params = {
         "client_key": settings.DOUYIN_CLIENT_KEY,
@@ -200,7 +235,7 @@ async def ensure_active_douyin_account(db: AsyncSession, account: SocialAccount)
     if account.status == "reauthorization_required":
         raise RuntimeError("抖音账号授权已失效，请重新连接账号")
 
-    if account.expires_at and account.expires_at <= _utcnow() + timedelta(minutes=5):
+    if account.expires_at and _ensure_utc(account.expires_at) <= _utcnow() + timedelta(minutes=5):
         if not account.refresh_token:
             account.status = "reauthorization_required"
             await db.commit()
@@ -235,4 +270,3 @@ def serialize_social_account(account: SocialAccount) -> dict[str, Any]:
         "created_at": account.created_at,
         "updated_at": account.updated_at,
     }
-

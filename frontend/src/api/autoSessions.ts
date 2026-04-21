@@ -1,4 +1,5 @@
 import api from './client'
+import { createSSEStream, type SSEStreamHandle, type SSEStreamHandlers } from '../lib/sseClient'
 import type {
   AutoChatSessionMessage,
   AutoChatMessagePayload,
@@ -28,6 +29,8 @@ export const updateAutoSession = (
     reference_video_id: string | null
     video_platform: string
     video_no_audio: boolean
+    video_model_no_audio: boolean
+    voiceover_no_audio?: boolean
     duration_mode: string
     video_transition: string
     bgm_mood: string
@@ -84,3 +87,22 @@ export const createAutoSessionPublishDraft = (
   payload?: { platform?: string; social_account_id?: string | null },
 ) =>
   api.post<PublishDraft>(`/api/projects/${projectId}/auto-sessions/${sessionId}/publish-drafts`, payload || {}).then(r => r.data)
+
+export const chatWithAgent = (
+  projectId: string,
+  sessionId: string,
+  payload: {
+    role: 'user'
+    title?: string
+    content: string
+    payload?: AutoChatMessagePayload
+    force_tool?: string
+    generation_model?: string
+    skip_video_generation?: boolean
+    video_model_no_audio?: boolean
+    voiceover_no_audio?: boolean
+  },
+  handlers: SSEStreamHandlers,
+  options?: { signal?: AbortSignal },
+): Promise<SSEStreamHandle> =>
+  createSSEStream(`/api/projects/${projectId}/auto-sessions/${sessionId}/chat`, payload, handlers, options)

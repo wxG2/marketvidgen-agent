@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import AsyncGenerator
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +31,7 @@ from app.models.background_template import BackgroundTemplate
 from app.models.auto_chat import AutoChatSession
 from app.models.material import Material
 from app.models.pipeline import PipelineRun, AgentExecution
+from app.models.repository_asset import RepositoryAsset
 from app.models.social_account import SocialAccount
 from app.models.video_delivery import VideoDelivery
 from app.models.user import User
@@ -42,18 +43,20 @@ from app.schemas.pipeline import (
     PipelineDeliveryResponse,
     PlatformPreviewCardResponse,
     VideoDeliveryResponse,
+    PipelineArtifactResponse,
     DeliveryActionRequest,
     ScriptGenerateRequest,
     ScriptGenerateResponse,
     PrefightCheckRequest,
     PrefightCheckResponse,
-    SwarmMessageRequest,
     ConfirmPlanRequest,
+    ConfirmPromptReviewRequest,
+    RetryShotRequest,
+    EstimateCostRequest,
+    EstimateCostResponse,
 )
 from app.schemas.social_account import PublishDraftResponse, SocialAccountResponse
 from app.agents.pipeline import PipelineExecutor
-from app.agents.swarm_runtime import get_swarm_controller
-from app.agents.swarm_runtime import register_swarm_controller, unregister_swarm_controller
 from app.services.video_delivery import (
     build_douyin_publish_draft,
     build_platform_preview_cards,
@@ -62,9 +65,42 @@ from app.services.video_delivery import (
     save_video_to_repository,
     serialize_delivery,
 )
+from app.services.pipeline_artifact_repository import serialize_repository_asset
 from app.services.social_accounts import serialize_social_account
 from app.services.usage_service import UsageRecorder
 from app.database import async_session
+
+# ---------------------------------------------------------------------------
+# In-process pipeline task registry
+# Maps run_id -> asyncio.Task so cancel_pipeline can kill the in-flight task.
+# ---------------------------------------------------------------------------
+_pipeline_tasks: dict[str, asyncio.Task] = {}
+
+
+def launch_pipeline_task(
+    executor,
+    run_id: str,
+    project_id: str,
+    input_config: dict,
+    *,
+    user_id: str | None = None,
+    memory_service=None,
+    mem0=None,
+    rag_service=None,
+) -> asyncio.Task:
+    """Create and register a background pipeline task."""
+    task = asyncio.create_task(
+        _run_pipeline(executor, run_id, project_id, input_config,
+                      user_id=user_id, memory_service=memory_service, mem0=mem0,
+                      rag_service=rag_service)
+    )
+    _pipeline_tasks[run_id] = task
+
+    def _cleanup(t: asyncio.Task) -> None:
+        _pipeline_tasks.pop(run_id, None)
+
+    task.add_done_callback(_cleanup)
+    return task
 
 
 SCRIPT_GENERATION_PROMPT = """你是一名短视频脚本创作专家。用户会提供一组图片素材，请你仔细观察每张图片的内容、场景、氛围，然后为这些图片撰写一段适合短视频旁白/口播的中文脚本。
@@ -122,18 +158,7 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
     router = APIRouter(prefix="/api", tags=["pipeline"])
 
     def _serialize_run(run: PipelineRun) -> dict:
-        payload = PipelineRunResponse.model_validate(run).model_dump(mode="json")
-        controller = get_swarm_controller(run.id)
-        if run.swarm_state_json:
-            try:
-                payload["swarm_state"] = json.loads(run.swarm_state_json)
-            except json.JSONDecodeError:
-                payload["swarm_state"] = None
-        else:
-            payload["swarm_state"] = None
-        if controller is not None and controller.latest_snapshot:
-            payload["swarm_state"] = controller.latest_snapshot
-        return payload
+        return PipelineRunResponse.model_validate(run).model_dump(mode="json")
 
     async def _get_delivery_records(db: AsyncSession, user_id: str, run_id: str) -> list[dict]:
         result = await db.execute(
@@ -147,6 +172,7 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
     async def launch_pipeline(
         project_id: str,
         req: PipelineCreateRequest,
+        request: Request,
         user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db),
     ):
@@ -197,6 +223,13 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
 
             # --- create new run ---
             input_config = req.model_dump()
+            input_config["video_model_no_audio"] = (
+                req.video_model_no_audio if req.video_model_no_audio is not None else req.no_audio
+            )
+            input_config["voiceover_no_audio"] = (
+                req.voiceover_no_audio if req.voiceover_no_audio is not None else req.no_audio
+            )
+            input_config["no_audio"] = input_config["video_model_no_audio"]
             if watermark_path:
                 input_config["watermark_path"] = watermark_path
             if background_template:
@@ -219,7 +252,7 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
                 session.background_template_id = req.background_template_id
                 session.draft_script = req.script
                 session.video_platform = req.platform
-                session.video_no_audio = req.no_audio
+                session.video_no_audio = input_config["video_model_no_audio"]
                 session.duration_mode = req.duration_mode
                 session.video_transition = req.transition
                 session.bgm_mood = req.bgm_mood
@@ -230,7 +263,13 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
             await db.refresh(run)
 
         # Fire and forget — pipeline runs in background
-        asyncio.create_task(_run_pipeline(executor, run.id, project_id, input_config))
+        launch_pipeline_task(
+            executor, run.id, project_id, input_config,
+            user_id=user.id,
+            memory_service=getattr(request.app.state, "agent_memory", None),
+            mem0=getattr(request.app.state, "mem0", None),
+            rag_service=getattr(request.app.state, "rag", None),
+        )
 
         return _serialize_run(run)
 
@@ -299,6 +338,29 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
                 )
             )
         return items
+
+    @router.get("/projects/{project_id}/pipeline/{run_id}/artifacts", response_model=list[PipelineArtifactResponse])
+    async def get_pipeline_artifacts(
+        project_id: str,
+        run_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        """List persisted intermediate artifacts for prompt/audio/video agents."""
+        run = await get_pipeline_run_for_user(db, user.id, run_id)
+        if run.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Pipeline run not found")
+
+        result = await db.execute(
+            select(RepositoryAsset)
+            .where(
+                RepositoryAsset.user_id == user.id,
+                RepositoryAsset.project_id == project_id,
+                RepositoryAsset.pipeline_run_id == run_id,
+            )
+            .order_by(RepositoryAsset.created_at.asc(), RepositoryAsset.asset_key.asc())
+        )
+        return [serialize_repository_asset(asset) for asset in result.scalars().all()]
 
     @router.get("/projects/{project_id}/pipeline/{run_id}/usage", response_model=PipelineUsageResponse)
     async def get_pipeline_usage(
@@ -472,6 +534,7 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
     async def retry_failed_agent(
         project_id: str,
         run_id: str,
+        request: Request,
         user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db),
     ):
@@ -540,6 +603,9 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
             _retry_agent(
                 executor, run.id, project_id, failed_exec.agent_name,
                 failed_input, input_config, artifacts,
+                user_id=user.id,
+                memory_service=getattr(request.app.state, "agent_memory", None),
+                mem0=getattr(request.app.state, "mem0", None),
             )
         )
 
@@ -556,7 +622,7 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
         run = await get_pipeline_run_for_user(db, user.id, run_id)
         if run.project_id != project_id:
             raise HTTPException(status_code=404, detail="Pipeline run not found")
-        if run.status not in ("pending", "running", "waiting_confirmation"):
+        if run.status not in ("pending", "running", "waiting_confirmation", "waiting_prompt_review"):
             raise HTTPException(status_code=400, detail=f"Cannot cancel pipeline in '{run.status}' status")
 
         run.status = "cancelled"
@@ -579,6 +645,11 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
             session.status_preview = "已取消"
             session.last_activity_at = run.updated_at
         await db.commit()
+
+        task = _pipeline_tasks.pop(run_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+
         return {"status": "cancelled"}
 
     @router.post("/projects/{project_id}/pipeline/{run_id}/confirm-plan")
@@ -586,10 +657,11 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
         project_id: str,
         run_id: str,
         req: ConfirmPlanRequest,
+        request: Request,
         user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db),
     ):
-        """Confirm or adjust the replication plan produced by the orchestrator."""
+        """Confirm or adjust the replication plan produced by the replication planner."""
         run = await get_pipeline_run_for_user(db, user.id, run_id)
         if run.project_id != project_id:
             raise HTTPException(status_code=404, detail="Pipeline run not found")
@@ -600,9 +672,9 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
 
         if not req.approved:
             if req.adjustments:
-                # Re-run orchestrator with user feedback
+                # Re-run the planner with user feedback.
                 run.status = "running"
-                run.current_agent = "orchestrator"
+                run.current_agent = "replication_planner"
                 run.updated_at = datetime.now(timezone.utc)
                 # Append adjustment feedback to input config
                 adjusted_config = {**input_config, "adjustment_feedback": req.adjustments}
@@ -612,8 +684,12 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
                     session.status_preview = "重新生成方案中"
                     session.last_activity_at = datetime.now(timezone.utc)
                 await db.commit()
-                asyncio.create_task(
-                    _run_pipeline(executor, run.id, project_id, adjusted_config)
+                launch_pipeline_task(
+                    executor, run.id, project_id, adjusted_config,
+                    user_id=user.id,
+                    memory_service=getattr(request.app.state, "agent_memory", None),
+                    mem0=getattr(request.app.state, "mem0", None),
+                    rag_service=getattr(request.app.state, "rag", None),
                 )
                 return {"status": "rerunning", "message": "正在根据反馈重新生成复刻方案"}
             else:
@@ -627,13 +703,13 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
                 await db.commit()
                 return {"status": "cancelled"}
 
-        # Approved — convert replication plan to standard orchestrator_plan and resume
-        # Rebuild artifacts from the completed orchestrator execution
+        # Approved — convert replication plan to standard orchestrator_plan and resume.
+        # Rebuild artifacts from the completed replication planner execution.
         result = await db.execute(
             select(AgentExecution)
             .where(
                 AgentExecution.pipeline_run_id == run_id,
-                AgentExecution.agent_name == "orchestrator",
+                AgentExecution.agent_name.in_(["replication_planner", "orchestrator"]),
                 AgentExecution.status == "completed",
             )
             .order_by(AgentExecution.created_at.desc())
@@ -641,7 +717,7 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
         )
         orch_exec = result.scalars().first()
         if not orch_exec or not orch_exec.output_data:
-            raise HTTPException(status_code=400, detail="No orchestrator output found")
+            raise HTTPException(status_code=400, detail="No replication planner output found")
 
         orch_output = json.loads(orch_exec.output_data)
         replication_plan = orch_output.get("replication_plan", {})
@@ -652,7 +728,7 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
 
         # Convert replication plan shots to standard orchestrator_plan format
         supported_durations = settings.SEEDANCE_SUPPORTED_DURATIONS
-        from app.agents.orchestrator import _snap_to_supported
+        from app.agents.stages.orchestrator import _snap_to_supported
 
         standard_shots = []
         for shot in replication_plan.get("shots", []):
@@ -688,35 +764,148 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
         await db.commit()
 
         # Resume pipeline from prompt_engineer
-        asyncio.create_task(
+        _task = asyncio.create_task(
             _continue_from_confirmation(
                 executor, run.id, project_id, input_config, orchestrator_plan,
+                user_id=user.id,
+                memory_service=getattr(request.app.state, "agent_memory", None),
+                mem0=getattr(request.app.state, "mem0", None),
             )
         )
+        _pipeline_tasks[run.id] = _task
+        _task.add_done_callback(lambda t: _pipeline_tasks.pop(run.id, None))
         return {"status": "confirmed", "message": "复刻方案已确认，继续生成中"}
 
-    @router.post("/projects/{project_id}/pipeline/{run_id}/message")
-    async def send_swarm_message(
+    @router.post("/projects/{project_id}/pipeline/{run_id}/confirm-prompt-review")
+    async def confirm_prompt_review(
         project_id: str,
         run_id: str,
-        req: SwarmMessageRequest,
+        request: Request,
+        req: ConfirmPromptReviewRequest = ConfirmPromptReviewRequest(),
         user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db),
     ):
+        """Confirm the prompt engineer's shot plan and continue the pipeline.
+
+        Optionally accepts ``edited_shots`` to patch specific shots before
+        continuing — only the fields that are not None are applied.
+        """
         run = await get_pipeline_run_for_user(db, user.id, run_id)
         if run.project_id != project_id:
             raise HTTPException(status_code=404, detail="Pipeline run not found")
-        if run.status not in ("pending", "running"):
-            raise HTTPException(status_code=400, detail="Only pending or running pipelines accept messages")
-        if run.engine != "swarm":
-            raise HTTPException(status_code=400, detail="Human-in-the-loop messaging is only enabled for swarm runs")
+        if run.status != "waiting_prompt_review":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Pipeline is not waiting for prompt review (status: {run.status})",
+            )
 
-        controller = get_swarm_controller(run_id)
-        if controller is None:
-            raise HTTPException(status_code=409, detail="Swarm controller is not available for this run")
+        input_config = json.loads(run.input_config) if run.input_config else {}
 
-        await controller.send_human_message(req.message)
-        return {"status": "queued"}
+        # Apply user edits to the saved prompt_plan checkpoint
+        edited_shots = req.edited_shots if req else None
+        if edited_shots:
+            snapshot: dict = json.loads(run.artifacts_snapshot or "{}")
+            prompt_plan: dict = snapshot.get("prompt_plan", {})
+            shots: list[dict] = prompt_plan.get("shot_prompts", [])
+            edits_by_idx = {e.shot_idx: e for e in edited_shots}
+            for shot in shots:
+                edit = edits_by_idx.get(shot.get("shot_idx"))
+                if edit is None:
+                    continue
+                if edit.script_segment is not None:
+                    shot["script_segment"] = edit.script_segment
+                if edit.video_prompt is not None:
+                    shot["video_prompt"] = edit.video_prompt
+                if edit.duration_seconds is not None and edit.duration_seconds >= 0.5:
+                    from app.agents.stages.prompt_engineer import (
+                        _generation_duration_for, _snap_to_half_second, _duration_range_label,
+                    )
+                    dur = _snap_to_half_second(edit.duration_seconds)
+                    shot["duration_seconds"] = dur
+                    shot["generation_duration_seconds"] = _generation_duration_for(dur)
+                    shot["duration_range_label"] = _duration_range_label(dur)
+            run.artifacts_snapshot = json.dumps(snapshot)
+
+        run.status = "running"
+        run.current_agent = "audio_subtitle"
+        run.updated_at = datetime.now(timezone.utc)
+        if run.session_id:
+            session = await get_auto_chat_session_for_user(db, user.id, project_id, run.session_id)
+            session.status_preview = "生成中"
+            session.last_activity_at = run.updated_at
+        await db.commit()
+
+        _task = asyncio.create_task(
+            _continue_from_prompt_review(
+                executor, run.id, project_id, input_config,
+                user_id=user.id,
+                memory_service=getattr(request.app.state, "agent_memory", None),
+                mem0=getattr(request.app.state, "mem0", None),
+            )
+        )
+        _pipeline_tasks[run.id] = _task
+        _task.add_done_callback(lambda t: _pipeline_tasks.pop(run.id, None))
+        return {"status": "confirmed", "message": "镜头方案已确认，继续生成视频"}
+
+    @router.post("/projects/{project_id}/pipeline/{run_id}/retry-shot")
+    async def retry_shot(
+        project_id: str,
+        run_id: str,
+        req: RetryShotRequest,
+        request: Request,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        """Re-generate only the specified shot indices; reuse all other completed clips."""
+        run = await get_pipeline_run_for_user(db, user.id, run_id)
+        if run.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Pipeline run not found")
+        if run.status not in ("completed", "failed"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Shot retry requires a terminal run (status: {run.status})",
+            )
+        if not req.shot_indices:
+            raise HTTPException(status_code=400, detail="shot_indices must be non-empty")
+
+        input_config = json.loads(run.input_config) if run.input_config else {}
+        saved_artifacts: dict = json.loads(run.artifacts_snapshot or "{}")
+
+        # Inject regenerate_indices so VideoGeneratorAgent only reruns those shots
+        retry_input_config = dict(input_config)
+        retry_input_config["regenerate_indices"] = req.shot_indices
+
+        run.status = "running"
+        run.current_agent = "video_generator"
+        run.error_message = None
+        run.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+
+        _task = asyncio.create_task(
+            _retry_shots_task(
+                executor, run.id, project_id, retry_input_config, saved_artifacts,
+                user_id=user.id,
+                memory_service=getattr(request.app.state, "agent_memory", None),
+                mem0=getattr(request.app.state, "mem0", None),
+            )
+        )
+        _pipeline_tasks[run.id] = _task
+        _task.add_done_callback(lambda t: _pipeline_tasks.pop(run.id, None))
+        return {"status": "running", "message": f"重新生成镜头 {req.shot_indices}"}
+
+    @router.post(
+        "/projects/{project_id}/pipeline/estimate-cost",
+        response_model=EstimateCostResponse,
+    )
+    async def estimate_cost(
+        project_id: str,
+        req: EstimateCostRequest,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        """Return a rough cost estimate for the given shot plan and settings."""
+        await get_project_for_user(db, user.id, project_id)
+        return _compute_cost_estimate(req)
 
     @router.post("/projects/{project_id}/generate-script", response_model=ScriptGenerateResponse)
     async def generate_script(
@@ -847,10 +1036,23 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
     return router
 
 
-async def _run_pipeline(executor: PipelineExecutor, run_id: str, project_id: str, input_config: dict):
+async def _run_pipeline(
+    executor: PipelineExecutor,
+    run_id: str,
+    project_id: str,
+    input_config: dict,
+    user_id: str | None = None,
+    memory_service=None,
+    mem0=None,
+    rag_service=None,
+):
     """Background task wrapper for pipeline execution."""
     try:
-        await executor.run(run_id, project_id, input_config)
+        await executor.run(
+            run_id, project_id, input_config,
+            user_id=user_id, memory_service=memory_service, mem0=mem0,
+            rag_service=rag_service,
+        )
         await _auto_save_run_to_repository(run_id)
     except Exception:
         import logging
@@ -881,6 +1083,9 @@ async def _continue_from_confirmation(
     project_id: str,
     input_config: dict,
     orchestrator_plan: dict,
+    user_id: str | None = None,
+    memory_service=None,
+    mem0=None,
 ):
     """Background task: resume pipeline from prompt_engineer after user confirms replication plan."""
     import logging
@@ -897,6 +1102,9 @@ async def _continue_from_confirmation(
             db_session_factory=async_session,
             usage_recorder=UsageRecorder(async_session),
             artifacts={"orchestrator_plan": orchestrator_plan},
+            user_id=user_id,
+            memory_service=memory_service,
+            mem0=mem0,
         )
 
         # Use script from orchestrator plan if present (replication may generate script)
@@ -928,6 +1136,67 @@ async def _continue_from_confirmation(
                 await session.commit()
 
 
+async def _continue_from_prompt_review(
+    executor: PipelineExecutor,
+    run_id: str,
+    project_id: str,
+    input_config: dict,
+    user_id: str | None = None,
+    memory_service=None,
+    mem0=None,
+):
+    """Background task: resume pipeline from av_editor after user confirms the prompt plan."""
+    import logging
+    import uuid
+    from app.agents.base import AgentContext
+    from app.services.usage_service import UsageRecorder
+
+    log = logging.getLogger(__name__)
+    try:
+        # Restore artifacts from the completed prompt_engineer execution
+        async with async_session() as db:
+            run = await db.get(PipelineRun, run_id)
+            if not run:
+                return
+            import json as _json
+            saved_artifacts: dict = _json.loads(run.artifacts_snapshot or "{}")
+
+        context = AgentContext(
+            trace_id=str(uuid.uuid4()),
+            pipeline_run_id=run_id,
+            project_id=project_id,
+            db_session_factory=async_session,
+            usage_recorder=UsageRecorder(async_session),
+            artifacts=saved_artifacts,
+            user_id=user_id,
+            memory_service=memory_service,
+            mem0=mem0,
+        )
+
+        result = await executor.resume_from_prompt_review(context, input_config)
+
+        final_video = result.get("final_video_path") if isinstance(result, dict) else None
+        async with async_session() as session:
+            run = await session.get(PipelineRun, run_id)
+            if run and run.status != "cancelled":
+                run.status = "completed"
+                run.final_video_path = final_video
+                run.completed_at = datetime.now(timezone.utc)
+                run.updated_at = datetime.now(timezone.utc)
+                await session.commit()
+        await _auto_save_run_to_repository(run_id)
+
+    except Exception as e:
+        log.error(f"Continue from prompt review failed for pipeline {run_id}: {e}", exc_info=True)
+        async with async_session() as session:
+            run = await session.get(PipelineRun, run_id)
+            if run and run.status != "cancelled":
+                run.status = "failed"
+                run.error_message = str(e)
+                run.updated_at = datetime.now(timezone.utc)
+                await session.commit()
+
+
 async def _retry_agent(
     executor: PipelineExecutor,
     run_id: str,
@@ -936,6 +1205,9 @@ async def _retry_agent(
     agent_input: dict,
     input_config: dict,
     artifacts: dict,
+    user_id: str | None = None,
+    memory_service=None,
+    mem0=None,
 ):
     """Background task: re-run a single failed agent and continue the pipeline from there."""
     import logging
@@ -944,12 +1216,7 @@ async def _retry_agent(
     from app.services.usage_service import UsageRecorder
 
     log = logging.getLogger(__name__)
-    controller_registered = False
     try:
-        if getattr(executor, "engine_name", "pipeline") == "swarm":
-            register_swarm_controller(run_id)
-            controller_registered = True
-
         context = AgentContext(
             trace_id=str(uuid.uuid4()),
             pipeline_run_id=run_id,
@@ -957,6 +1224,9 @@ async def _retry_agent(
             db_session_factory=async_session,
             usage_recorder=UsageRecorder(async_session),
             artifacts=artifacts,
+            user_id=user_id,
+            memory_service=memory_service,
+            mem0=mem0,
         )
 
         agent_map = executor.get_agent_map()
@@ -1002,65 +1272,132 @@ async def _retry_agent(
                 run.error_message = str(e)
                 run.updated_at = datetime.now(timezone.utc)
                 await session.commit()
-    finally:
-        if controller_registered:
-            unregister_swarm_controller(run_id)
 
 
-def _build_agent_input(agent_name: str, artifacts: dict, input_config: dict) -> dict:
-    """Build the input dict for a given agent from accumulated artifacts."""
-    if agent_name == "orchestrator":
-        return input_config
-    if agent_name == "prompt_engineer":
-        return artifacts.get("orchestrator_plan", {})
-    if agent_name == "audio_subtitle":
-        prompt_plan = artifacts.get("prompt_plan", {})
-        orchestrator_plan = artifacts.get("orchestrator_plan", {})
-        shot_prompts = prompt_plan.get("shot_prompts", [])
-        shot_script = "\n".join(
-            str(item.get("script_segment") or "").strip()
-            for item in shot_prompts
-            if isinstance(item, dict) and str(item.get("script_segment") or "").strip()
-        )
-        return {
-            "script": shot_script or orchestrator_plan.get("script") or input_config.get("script", ""),
-            "voice_params": prompt_plan.get("voice_params", {}),
-        }
-    if agent_name == "video_generator":
-        prompt_plan = artifacts.get("prompt_plan", {})
-        return {
-            "shot_prompts": prompt_plan.get("shot_prompts", []),
-            "no_audio": input_config.get("no_audio", True),
-        }
-    if agent_name == "video_editor":
-        video_clips = artifacts.get("video_clips", {})
-        audio = artifacts.get("audio", {})
-        prompt_plan = artifacts.get("prompt_plan", {})
-        orch_plan = artifacts.get("orchestrator_plan", {})
-        return {
-            "video_clips": video_clips.get("video_clips", []),
-            "audio_path": audio.get("audio_path", ""),
-            "subtitle_path": audio.get("subtitle_path", ""),
-            "shot_prompts": prompt_plan.get("shot_prompts", []),
-            "duration_mode": input_config.get("duration_mode", "fixed"),
-            "shot_durations": [s["duration_seconds"] for s in orch_plan.get("shots", [])],
-            "transition": input_config.get("transition", "none"),
-            "transition_duration": input_config.get("transition_duration", 0.5),
-            "bgm_mood": input_config.get("bgm_mood", "none"),
-            "bgm_volume": input_config.get("bgm_volume", 0.15),
-            "watermark_path": input_config.get("watermark_path"),
-        }
-    return {}
-
-
-async def _run_agent(executor: PipelineExecutor, context, agent_name: str, input_config: dict) -> dict:
-    return await executor.run_named_agent(context, agent_name, input_config)
-
-
-async def _continue_pipeline_from_retry(
+async def _retry_shots_task(
     executor: PipelineExecutor,
-    context,
-    agent_name: str,
-    input_config: dict,
+    run_id: str,
+    project_id: str,
+    input_config: dict,   # includes regenerate_indices
+    saved_artifacts: dict,
+    user_id: str | None = None,
+    memory_service=None,
+    mem0=None,
 ):
-    await executor.continue_from_retry(context, agent_name, input_config)
+    """Background task: re-run only the specified shots then re-edit the video."""
+    import logging as _logging
+    import uuid as _uuid
+    from app.agents.base import AgentContext
+    from app.services.usage_service import UsageRecorder
+
+    log = _logging.getLogger(__name__)
+    try:
+        context = AgentContext(
+            trace_id=str(_uuid.uuid4()),
+            pipeline_run_id=run_id,
+            project_id=project_id,
+            db_session_factory=async_session,
+            usage_recorder=UsageRecorder(async_session),
+            artifacts=saved_artifacts,
+            user_id=user_id,
+            memory_service=memory_service,
+            mem0=mem0,
+        )
+
+        # Re-run only the failing shots (VideoGeneratorAgent reads regenerate_indices)
+        video_input = executor.build_video_input(saved_artifacts, input_config)
+        video_result = await executor.video_gen_agent.run(context, video_input)
+        if not video_result.success:
+            raise RuntimeError(f"Shot retry failed: {video_result.error}")
+        context.artifacts["video_clips"] = video_result.output_data
+        await context.save_checkpoint()
+
+        # Re-assemble the final video with the updated clip list
+        editor_input = executor.build_editor_input(context.artifacts, input_config)
+        editor_result = await executor.video_editor.run(context, editor_input)
+        if not editor_result.success:
+            raise RuntimeError(f"Video editor failed after shot retry: {editor_result.error}")
+        context.artifacts["final_video"] = editor_result.output_data
+        await context.save_checkpoint()
+
+        final_video_path = editor_result.output_data.get("final_video_path")
+        async with async_session() as session:
+            run = await session.get(PipelineRun, run_id)
+            if run and run.status != "cancelled":
+                run.status = "completed"
+                run.final_video_path = final_video_path
+                run.completed_at = datetime.now(timezone.utc)
+                run.updated_at = datetime.now(timezone.utc)
+                await session.commit()
+        await _auto_save_run_to_repository(run_id)
+
+    except Exception as exc:
+        log.error(f"Shot retry failed for pipeline {run_id}: {exc}", exc_info=True)
+        async with async_session() as session:
+            run = await session.get(PipelineRun, run_id)
+            if run and run.status != "cancelled":
+                run.status = "failed"
+                run.error_message = str(exc)
+                run.updated_at = datetime.now(timezone.utc)
+                await session.commit()
+
+
+# ── Static price table (CNY, 2025 estimates) ──────────────────────────────────
+_VIDEO_GEN_PRICE_PER_SECOND: dict[str, float] = {
+    "seedance1.5-pro": 0.30,    # CNY per second of generated video
+    "seedance2.0":     0.50,
+    "kling":           0.35,
+    "mock":            0.00,
+}
+_TTS_PRICE_PER_1K_CHARS: float = 0.10     # CNY per 1 000 Chinese characters
+_LLM_PRICE_PER_1M_TOKENS: float = 2.00    # CNY per 1 M tokens (rough blended rate)
+_BGM_PRICE_FLAT: float = 0.05             # CNY flat per run with BGM
+
+
+def _compute_cost_estimate(req: EstimateCostRequest) -> EstimateCostResponse:
+    model_key = req.model if req.model in _VIDEO_GEN_PRICE_PER_SECOND else "seedance1.5-pro"
+    price_per_sec = _VIDEO_GEN_PRICE_PER_SECOND[model_key]
+
+    total_gen_seconds: float = sum(
+        float(s.get("generation_duration_seconds") or s.get("duration_seconds") or 5)
+        for s in req.shot_plan
+    )
+    shot_count = len(req.shot_plan)
+
+    video_cost = total_gen_seconds * price_per_sec
+
+    # TTS: use explicit char count or estimate from script_segment lengths
+    if req.tts_char_count > 0:
+        tts_chars = req.tts_char_count
+    else:
+        tts_chars = sum(
+            len(str(s.get("script_segment") or ""))
+            for s in req.shot_plan
+        )
+    tts_cost = 0.0 if req.voiceover_no_audio else tts_chars / 1000 * _TTS_PRICE_PER_1K_CHARS
+
+    # LLM: rough estimate — orchestrator + director + qa ≈ 60 K tokens per run
+    llm_cost = 60_000 / 1_000_000 * _LLM_PRICE_PER_1M_TOKENS
+
+    bgm_cost = _BGM_PRICE_FLAT if req.bgm_mood not in ("none", "") else 0.0
+
+    total = round(video_cost + tts_cost + llm_cost + bgm_cost, 2)
+
+    warning = None
+    if total > 10.0:
+        warning = f"预估费用 ¥{total:.2f}，超过 ¥10，请确认后继续"
+    elif shot_count == 0:
+        warning = "未提供镜头方案，仅显示 LLM 基础费用"
+
+    return EstimateCostResponse(
+        estimated_total_cny=total,
+        breakdown={
+            "video_gen": round(video_cost, 2),
+            "tts": round(tts_cost, 2),
+            "llm": round(llm_cost, 2),
+            "bgm": round(bgm_cost, 2),
+        },
+        shot_count=shot_count,
+        total_generation_seconds=round(total_gen_seconds, 1),
+        warning=warning,
+    )

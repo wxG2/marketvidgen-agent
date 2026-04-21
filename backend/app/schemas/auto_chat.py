@@ -41,6 +41,7 @@ class AutoChatMessagePayload(BaseModel):
     files: list[AutoChatMessagePayloadFile] = []
     video: Optional[AutoChatMessagePayloadVideo] = None
     publishDraft: Optional[PublishDraftResponse] = None
+    directorPlan: Optional[dict] = None
 
 
 class AutoChatMessageCreateRequest(BaseModel):
@@ -48,6 +49,11 @@ class AutoChatMessageCreateRequest(BaseModel):
     title: Optional[str] = None
     content: str
     payload: Optional[AutoChatMessagePayload] = None
+    force_tool: Optional[str] = None
+    generation_model: Optional[str] = None
+    skip_video_generation: Optional[bool] = None
+    video_model_no_audio: Optional[bool] = None
+    voiceover_no_audio: Optional[bool] = None
 
 
 class AutoChatMessageUpdateRequest(BaseModel):
@@ -76,6 +82,8 @@ class AutoChatSessionState(BaseModel):
     reference_video_id: Optional[str] = None
     video_platform: str = "generic"
     video_no_audio: bool = True
+    video_model_no_audio: bool = True
+    voiceover_no_audio: bool = False
     duration_mode: str = "fixed"
     video_transition: str = "none"
     bgm_mood: str = "none"
@@ -91,6 +99,8 @@ class AutoChatSessionUpdateRequest(BaseModel):
     reference_video_id: Optional[str] = None
     video_platform: Optional[str] = None
     video_no_audio: Optional[bool] = None
+    video_model_no_audio: Optional[bool] = None
+    voiceover_no_audio: Optional[bool] = None
     duration_mode: Optional[str] = None
     video_transition: Optional[str] = None
     bgm_mood: Optional[str] = None

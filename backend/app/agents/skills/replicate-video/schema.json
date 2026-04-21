@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "properties": {
+    "direction": {
+      "type": "string",
+      "description": "复刻方向或补充要求，用自然语言描述希望保留、调整或新增的内容，例如：保留原视频的快剪节奏，换成介绍我们产品的内容。留空则完全按参考视频风格复刻。"
+    },
+    "generation_model": {
+      "type": "string",
+      "enum": ["seedance1.5-pro", "seedance2.0", "kling"],
+      "description": "确认复刻方案后用于生成视频片段的模型。默认 seedance1.5-pro；可选 seedance2.0 或 kling。"
+    }
+  },
+  "required": []
+}

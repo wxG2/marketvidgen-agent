@@ -19,6 +19,7 @@ from app.schemas.timeline import (
     TimelineAssetResponse, TimelineClipResponse,
     TimelineSaveRequest, TimelineResponse,
 )
+from app.services.upload_validation import validate_upload_file
 
 router = APIRouter(tags=["timeline"])
 
@@ -154,7 +155,8 @@ async def upload_timeline_asset(
 ):
     """Upload a local video, audio, or subtitle file for timeline use."""
     await get_project_for_user(db, user.id, project_id)
-    filename = file.filename or "unnamed"
+    validated = await validate_upload_file(file, kind="timeline_asset")
+    filename = validated.filename
     asset_type = _detect_asset_type(filename)
 
     asset_dir = os.path.join(settings.GENERATED_DIR, project_id, "assets")
@@ -163,16 +165,15 @@ async def upload_timeline_asset(
     unique_name = f"{uuid.uuid4().hex[:8]}_{filename}"
     file_path = os.path.join(asset_dir, unique_name)
 
-    content = await file.read()
     with open(file_path, "wb") as f:
-        f.write(content)
+        f.write(validated.content)
 
     asset = TimelineAsset(
         project_id=project_id,
         asset_type=asset_type,
         filename=filename,
         file_path=file_path,
-        file_size=len(content),
+        file_size=validated.file_size,
     )
     db.add(asset)
     await db.commit()

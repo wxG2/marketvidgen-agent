@@ -27,6 +27,7 @@ from app.schemas.talking_head import (
 )
 from app.services.image_compositor import ImageCompositor
 from app.services.lipsync_generator import LipSyncGenerator
+from app.services.upload_validation import validate_upload_file
 
 router = APIRouter(tags=["talking-head"])
 
@@ -50,20 +51,20 @@ def get_talking_head_router(compositor: ImageCompositor, lipsync: LipSyncGenerat
         os.makedirs(upload_dir, exist_ok=True)
 
         file_id = str(uuid.uuid4())
-        ext = os.path.splitext(file.filename or "image.png")[1]
+        validated = await validate_upload_file(file, kind="image")
+        ext = os.path.splitext(validated.filename)[1]
         saved_name = f"{file_id}{ext}"
         saved_path = os.path.join(upload_dir, saved_name)
 
-        content = await file.read()
         with open(saved_path, "wb") as f:
-            f.write(content)
+            f.write(validated.content)
 
         model_img = ModelImage(
             id=file_id,
             project_id=project_id,
-            filename=file.filename or saved_name,
+            filename=validated.filename,
             file_path=saved_path,
-            file_size=len(content),
+            file_size=validated.file_size,
         )
         db.add(model_img)
         await db.commit()
@@ -127,27 +128,27 @@ def get_talking_head_router(compositor: ImageCompositor, lipsync: LipSyncGenerat
         os.makedirs(upload_dir, exist_ok=True)
 
         file_id = str(uuid.uuid4())
-        ext = os.path.splitext(file.filename or "audio.mp3")[1]
+        validated = await validate_upload_file(file, kind="audio")
+        ext = os.path.splitext(validated.filename)[1]
         saved_name = f"{file_id}{ext}"
         saved_path = os.path.join(upload_dir, saved_name)
 
-        content = await file.read()
         with open(saved_path, "wb") as f:
-            f.write(content)
+            f.write(validated.content)
 
         serve_url = f"/api/talking-head-audio/{file_id}/file"
         # Store mapping for serving
         _audio_files[file_id] = {
             "path": saved_path,
-            "filename": file.filename or saved_name,
+            "filename": validated.filename,
             "user_id": user.id,
         }
 
         return {
             "id": file_id,
-            "filename": file.filename or saved_name,
+            "filename": validated.filename,
             "file_url": serve_url,
-            "file_size": len(content),
+            "file_size": validated.file_size,
         }
 
     @router.get("/api/talking-head-audio/{audio_id}/file")

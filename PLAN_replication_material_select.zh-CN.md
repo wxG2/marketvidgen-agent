@@ -66,7 +66,7 @@ if session_materials:
 
 ### 2.1 移除"复刻执行方案"独立消息的 useEffect
 
-**文件**: `frontend/src/components/pipeline/AutoModeStudio.tsx`
+**文件**: `frontend/src/components/pipeline/AutoModeStudio.vue`
 
 删除 lines 710-760 的 useEffect（创建 title="复刻执行方案" 的 assistant 消息）。
 
@@ -77,7 +77,7 @@ if session_materials:
 
 ### 2.2 扩展确认卡片，内嵌方案内容
 
-**文件**: `frontend/src/components/pipeline/AutoModeStudio.tsx`（lines 1405-1473）
+**文件**: `frontend/src/components/pipeline/AutoModeStudio.vue`
 
 将当前简单的确认卡片替换为包含完整方案的内嵌布局：
 
@@ -106,13 +106,13 @@ if session_materials:
 
 ### 2.3 更新 builder 函数
 
-**文件**: `frontend/src/components/pipeline/AutoModeStudio.tsx`
+**文件**: `frontend/src/components/pipeline/AutoModeStudio.vue`
 
 `buildReplicationPlanMessage` 和 `buildReplicationPlanImages` 不再被调用（方案不再作为消息），可标记为 unused 或直接删除。如果保留用于其他用途，更新 `buildReplicationPlanImages` 使其优先返回 `material_thumbnail_url`。
 
 ### 2.4 Hydration 兼容
 
-**文件**: `frontend/src/components/pipeline/AutoModeStudio.tsx`
+**文件**: `frontend/src/components/pipeline/AutoModeStudio.vue`
 
 `hydrateFromSessionDetail` 中移除对 `title === '复刻执行方案'` 消息的查找（line 263）。已持久化的旧方案消息仍会出现在消息列表中（作为普通 assistant 消息渲染），不影响功能。
 
@@ -124,13 +124,13 @@ if session_materials:
 |------|------|
 | `backend/app/agents/orchestrator.py` | 新增 `_get_session_materials`, `_assign_materials_to_shots`；在 `_execute_replication` 中调用 |
 | `backend/app/routers/pipeline.py` | `confirm_replication_plan` 中 `image_path` 优先取 `material_image_path` |
-| `frontend/src/components/pipeline/AutoModeStudio.tsx` | 删除方案消息 useEffect；扩展确认卡片内嵌方案；清理 builder 函数 |
+| `frontend/src/components/pipeline/AutoModeStudio.vue` | 删除方案消息展示逻辑；扩展确认卡片内嵌方案；清理 builder 函数 |
 
 ## 复用的现有函数/模式
 
 - `_resolve_images()` (`orchestrator.py:309`) — 参考其素材查询模式
 - `_selection_to_response()` (`auto_sessions.py:117`) — 参考 `thumbnail_url` 格式：`/api/materials/{id}/thumbnail`
-- `toMediaUrl()` (`AutoModeStudio.tsx:1767`) — 关键帧路径转 URL
+- `toMediaUrl()`（如前端保留该路径转换 helper，则位于 `AutoModeStudio.vue` 或相邻 composable）— 关键帧路径转 URL
 - Material thumbnail API: `GET /api/materials/{id}/thumbnail` — 素材图片展示端点
 
 ## 验证方式

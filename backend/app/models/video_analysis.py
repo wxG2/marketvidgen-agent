@@ -3,7 +3,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
-from sqlalchemy import String, DateTime, Text, ForeignKey
+
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -11,11 +12,17 @@ from app.database import Base
 
 class VideoAnalysis(Base):
     __tablename__ = "video_analyses"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'completed', 'failed')",
+            name="status",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    video_upload_id: Mapped[str] = mapped_column(String, ForeignKey("video_uploads.id", ondelete="CASCADE"), nullable=False)
-    project_id: Mapped[str] = mapped_column(String, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
-    status: Mapped[str] = mapped_column(String, default="pending")
+    video_upload_id: Mapped[str] = mapped_column(String, ForeignKey("video_uploads.id", ondelete="CASCADE"), index=True, nullable=False)
+    project_id: Mapped[str] = mapped_column(String, ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String, default="pending", nullable=False)
     raw_response: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     scene_tags: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

@@ -16,6 +16,7 @@ from app.models.project import Project
 from app.models.user import User
 from app.models.video_upload import VideoUpload
 from app.schemas.video import VideoUploadResponse
+from app.services.upload_validation import validate_upload_file
 
 router = APIRouter(tags=["upload"])
 
@@ -33,7 +34,8 @@ async def upload_video(
     if session_id:
         session = await get_auto_chat_session_for_user(db, user.id, project_id, session_id)
 
-    filename = (file.filename or "video").strip()
+    validated = await validate_upload_file(file, kind="video")
+    filename = validated.filename
     duplicate = (
         await db.execute(
             select(VideoUpload.id)
@@ -55,17 +57,16 @@ async def upload_video(
     safe_name = f"{file_id}_{filename}"
     file_path = os.path.join(upload_dir, safe_name)
 
-    content = await file.read()
     with open(file_path, "wb") as f:
-        f.write(content)
+        f.write(validated.content)
 
     upload = VideoUpload(
         project_id=project_id,
         session_id=session.id if session else None,
         filename=filename,
         file_path=file_path,
-        file_size=len(content),
-        mime_type=file.content_type,
+        file_size=validated.file_size,
+        mime_type=validated.content_type,
     )
     db.add(upload)
     await db.flush()

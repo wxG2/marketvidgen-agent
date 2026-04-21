@@ -284,7 +284,7 @@
 
 前端在：
 
-- `frontend/src/components/pipeline/AutoModeStudio.tsx`
+- `frontend/src/components/pipeline/AutoModeStudio.vue`
 
 里先取：
 
@@ -299,7 +299,7 @@
 
 关键 `useEffect` 在：
 
-- `AutoModeStudio.tsx`
+- `AutoModeStudio.vue`
 - 负责等待 `currentRun.status === 'waiting_confirmation'`
 - 然后调用 `buildReplicationAnalysisReport(replicationOutput)`
 
@@ -495,7 +495,7 @@
 
 ### 12.2 前端
 
-- `frontend/src/components/pipeline/AutoModeStudio.tsx`
+- `frontend/src/components/pipeline/AutoModeStudio.vue`
   - `replicationPlan` 取数逻辑
   - `replicationOutput` 取数逻辑
   - 解析报告 append / patch 的 `useEffect`
@@ -519,7 +519,7 @@
    - `music_design`
    - `shots`
 5. 看 `AgentExecution.progress_text` 是否持续更新，判断是否卡在模型生成前还是模型返回后
-6. 再看前端 `AutoModeStudio.tsx` 中解析报告 `useEffect` 是否被 `waiting_confirmation` 条件挡住
+6. 再看前端 `AutoModeStudio.vue` 中解析报告展示逻辑是否被 `waiting_confirmation` 条件挡住
 
 ## 14. 一句话总结
 

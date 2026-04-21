@@ -1,0 +1,12 @@
+.git
+.env
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+data/
+*.db
+node_modules
+dist
+.vscode
+.DS_Store

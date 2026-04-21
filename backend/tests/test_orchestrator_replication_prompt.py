@@ -1,11 +1,11 @@
 from pathlib import Path
 
-from app.agents.orchestrator import OrchestratorAgent
+from app.agents.stages.replication_planner import ReplicationPlannerAgent
 from app.config import settings
 
 
-def _make_agent() -> OrchestratorAgent:
-    return OrchestratorAgent(llm_service=None)
+def _make_agent() -> ReplicationPlannerAgent:
+    return ReplicationPlannerAgent(llm_service=None)
 
 
 def test_replication_prompt_uses_background_as_primary_when_user_has_no_explicit_direction():
@@ -65,38 +65,33 @@ def test_generic_replication_phrases_are_not_treated_as_explicit_direction():
     assert agent._has_explicit_replication_direction(script="跟这个一样", adjustment_feedback="") is False
 
 
-def test_replication_skill_requires_explicit_recreation_intent():
+def test_replication_planner_treats_specific_recreation_intent_as_explicit_direction():
     agent = _make_agent()
 
-    assert agent._should_invoke_video_replication_skill(script="请复刻这个视频的节奏和镜头。") is True
-    assert agent._should_invoke_video_replication_skill(script="我想做一个同款视频。") is True
-    assert agent._should_invoke_video_replication_skill(script="先看一下这个视频。") is False
-    assert agent._should_invoke_video_replication_skill(script="") is False
+    assert agent._has_explicit_replication_direction(
+        script="保留原视频运镜节奏，但把内容改成口腔诊所种草。",
+        adjustment_feedback="",
+    ) is True
+    assert agent._has_explicit_replication_direction(
+        script="我想做一个同款视频。",
+        adjustment_feedback="",
+    ) is False
+    assert agent._has_explicit_replication_direction(script="", adjustment_feedback="") is False
 
 
-def test_adjustment_feedback_can_retrigger_replication_skill():
+def test_adjustment_feedback_is_used_by_replication_planner():
     agent = _make_agent()
 
-    assert agent._should_invoke_video_replication_skill(
+    assert agent._has_explicit_replication_direction(
         script="先帮我看看这个视频",
         adjustment_feedback="把第三镜改成同款慢推镜头",
     ) is True
 
 
-def test_select_requested_skill_only_returns_replication_when_intent_and_video_exist():
+def test_replication_planner_exposes_pipeline_stage_name():
     agent = _make_agent()
 
-    assert agent._select_requested_skill({
-        "reference_video_id": "video-1",
-        "script": "请复刻这个视频",
-    }) == agent.video_replication_skill_name
-    assert agent._select_requested_skill({
-        "reference_video_id": "video-1",
-        "script": "先帮我分析一下这个视频",
-    }) is None
-    assert agent._select_requested_skill({
-        "script": "请复刻这个视频",
-    }) is None
+    assert agent.name == "replication_planner"
 
 
 def test_replication_analysis_report_includes_key_sections():
@@ -169,7 +164,7 @@ def test_sanitize_replication_plan_handles_list_payloads_without_crashing():
         ],
     })
 
-    assert sanitized["audio_design"] == {}
+    assert sanitized["audio_design"] == {"voice_speed": 1.0}
     assert sanitized["music_design"] == {}
     assert len(sanitized["shots"]) == 1
     assert sanitized["shots"][0]["shot_idx"] == 2

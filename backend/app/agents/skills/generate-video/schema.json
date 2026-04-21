@@ -1,0 +1,45 @@
+{
+  "type": "object",
+  "properties": {
+    "user_request": {
+      "type": "string",
+      "description": "用户对本次视频生成目标、创意方向或营销方案的自然语言要求。它不是最终旁白脚本，不应被原样写入镜头口播。"
+    },
+    "narration_script": {
+      "type": "string",
+      "description": "用户明确提供的最终口播/旁白脚本。只有当用户给出可直接播报的文案时才填写。"
+    },
+    "script": {
+      "type": "string",
+      "description": "兼容旧字段：仅当用户明确提供最终脚本时使用；普通生成要求请填入 user_request。"
+    },
+    "platform": {
+      "type": "string",
+      "enum": ["generic", "douyin", "xiaohongshu", "bilibili"],
+      "description": "目标发布平台，决定输出分辨率和画面比例。generic 和 bilibili 输出 1280×720 横版，douyin 输出 720×1280 竖版，xiaohongshu 输出 1080×1440 竖版。不指定时默认 generic。"
+    },
+    "duration_mode": {
+      "type": "string",
+      "enum": ["fixed", "auto"],
+      "description": "时长模式：fixed 表示按素材数量固定每个镜头 5 秒；auto 表示 AI 根据脚本节奏自由分配每个镜头的时长。"
+    },
+    "generation_model": {
+      "type": "string",
+      "enum": ["seedance1.5-pro", "seedance2.0", "kling"],
+      "description": "视频生成模型。默认 seedance1.5-pro；可选 seedance2.0 或 kling。"
+    },
+    "video_model_no_audio": {
+      "type": "boolean",
+      "description": "是否关闭视频模型自带原声。默认 true；用户明确要求 Seedance 2.0 生成有声视频时设为 false。"
+    },
+    "voiceover_no_audio": {
+      "type": "boolean",
+      "description": "是否跳过 VidGen 自己的 TTS 配音和字幕。默认 true；只有用户明确需要系统配音/字幕时设为 false。"
+    },
+    "style": {
+      "type": "string",
+      "description": "视频整体风格标签，传给 AI 作为创作参考，例如 commercial、vlog、documentary 等。"
+    }
+  },
+  "required": ["user_request"]
+}

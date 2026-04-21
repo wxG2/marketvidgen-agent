@@ -1,7 +1,7 @@
 """add progress_text to agent_executions
 
 Revision ID: 003_add_progress_text
-Revises: 002_add_swarm_state_columns
+Revises: 002_add_pipeline_engine
 Create Date: 2026-04-02
 """
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 revision = "003_add_progress_text"
-down_revision = "002_add_swarm_state_columns"
+down_revision = "002_add_pipeline_engine"
 branch_labels = None
 depends_on = None
 

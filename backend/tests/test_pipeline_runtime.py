@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.agents.base import AgentContext, AgentResult, BaseAgent
 from app.auth import get_current_user
 from app.agents.pipeline import PipelineExecutor
-from app.agents.swarm_pipeline import SwarmPipelineExecutor
 from app.database import Base, get_db
 from app.models import *  # noqa: F401,F403
 from app.models.pipeline import AgentExecution, PipelineRun
@@ -211,6 +210,7 @@ async def _launch_pipeline(client: AsyncClient, project_id: str):
         json={
             "script": "test script",
             "image_ids": ["img-1"],
+            "review_prompts": False,
         },
     )
     assert response.status_code == 200
@@ -291,59 +291,6 @@ async def test_retry_failed_audio_does_not_rerun_video(pipeline_client, project_
     assert editor_attempts == [1]
 
 
-async def test_swarm_executor_records_lead_decisions_and_completes(pipeline_client, project_id, session_factory):
-    executor = make_executor(session_factory, executor_cls=SwarmPipelineExecutor)
-    client = await pipeline_client(executor)
-
-    run = await _launch_pipeline(client, project_id)
-    assert run["engine"] == "swarm"
-    await _wait_for_status(session_factory, run["id"], "completed")
-
-    run_response = await client.get(f"/api/projects/{project_id}/pipeline/{run['id']}")
-    assert run_response.status_code == 200
-    refreshed_run = run_response.json()
-    assert refreshed_run["swarm_state"] is not None
-    assert "task_board" in refreshed_run["swarm_state"]
-
-    async with session_factory() as session:
-        result = await session.execute(
-            select(AgentExecution).where(AgentExecution.pipeline_run_id == run["id"])
-        )
-        executions = result.scalars().all()
-
-    agent_names = [execution.agent_name for execution in executions]
-    assert "swarm_lead" in agent_names
-    assert "orchestrator" in agent_names
-    assert "prompt_engineer" in agent_names
-    assert "audio_subtitle" in agent_names
-    assert "video_generator" in agent_names
-    assert "video_editor" in agent_names
-
-    lead_execs = [execution for execution in executions if execution.agent_name == "swarm_lead"]
-    assert len(lead_execs) >= 3
-
-
-async def test_swarm_accepts_human_message_while_running(pipeline_client, project_id, session_factory):
-    executor = make_executor(
-        session_factory,
-        delays={"audio_subtitle": 0.3, "video_generator": 0.3},
-        executor_cls=SwarmPipelineExecutor,
-    )
-    client = await pipeline_client(executor)
-
-    run = await _launch_pipeline(client, project_id)
-    await _wait_for_status(session_factory, run["id"], "running")
-
-    message_response = await client.post(
-        f"/api/projects/{project_id}/pipeline/{run['id']}/message",
-        json={"message": "请使用更柔和的转场，并保持舒缓的背景音乐"},
-    )
-    assert message_response.status_code == 200
-    assert message_response.json()["status"] == "queued"
-
-    await _wait_for_status(session_factory, run["id"], "completed")
-
-
 async def test_pipeline_delivery_preview_and_save(pipeline_client, project_id, session_factory):
     executor = make_executor(session_factory)
     client = await pipeline_client(executor)
@@ -364,6 +311,51 @@ async def test_pipeline_delivery_preview_and_save(pipeline_client, project_id, s
     assert saved["status"] == "saved"
     assert saved["saved_video_path"]
     assert Path(saved["saved_video_path"]).exists()
+
+
+async def test_pipeline_persists_intermediate_agent_artifacts(pipeline_client, project_id, session_factory):
+    executor = make_executor(session_factory)
+    client = await pipeline_client(executor)
+
+    run = await _launch_pipeline(client, project_id)
+    await _wait_for_status(session_factory, run["id"], "completed")
+
+    response = await client.get(f"/api/projects/{project_id}/pipeline/{run['id']}/artifacts")
+    assert response.status_code == 200
+    artifacts = response.json()
+    asset_keys = {item["asset_key"] for item in artifacts}
+
+    assert {
+        "prompt_engineer.plan",
+        "prompt_engineer.shot.0",
+        "prompt_engineer.voice_params",
+        "audio_subtitle.audio",
+        "audio_subtitle.subtitle",
+        "video_generator.manifest",
+        "video_generator.shot.0",
+    }.issubset(asset_keys)
+    prompt_asset = next(item for item in artifacts if item["asset_key"] == "prompt_engineer.shot.0")
+    assert prompt_asset["source_agent"] == "prompt_engineer"
+    assert prompt_asset["text_content"] == "camera push in"
+
+
+async def test_standard_pipeline_does_not_create_requirement_parser_execution(
+    pipeline_client, project_id, session_factory
+):
+    executor = make_executor(session_factory)
+    client = await pipeline_client(executor)
+
+    run = await _launch_pipeline(client, project_id)
+    await _wait_for_status(session_factory, run["id"], "completed")
+
+    async with session_factory() as session:
+        result = await session.execute(
+            select(AgentExecution.agent_name).where(AgentExecution.pipeline_run_id == run["id"])
+        )
+        agent_names = result.scalars().all()
+
+    assert "requirement_parser" not in agent_names
+    assert "orchestrator" in agent_names
 
 
 async def test_pipeline_delivery_publish_requires_connected_douyin_account(pipeline_client, project_id, session_factory):

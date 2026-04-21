@@ -7,7 +7,7 @@ VidGen is an AI-assisted short-video production workspace with two workflows:
 - `一键生成` for chat-style video generation from script + images
 - `手动模式` for step-by-step upload, analysis, material selection, prompt editing, generation, and timeline editing
 
-The current stack uses a React + Vite frontend and a FastAPI backend. The backend orchestrates multiple agents for planning, prompt design, audio/subtitle generation, clip generation, and final editing.
+The current stack uses a Vue + Vite frontend and a FastAPI backend. The backend orchestrates multiple agents for planning, prompt design, audio/subtitle generation, clip generation, and final editing.
 
 ## Highlights
 
@@ -40,17 +40,17 @@ The current stack uses a React + Vite frontend and a FastAPI backend. The backen
 
 ### Frontend
 
-- React 19
+- Vue 3
 - TypeScript
 - Vite
-- Zustand
 - TanStack Query
 
 Important entry points:
 
-- [frontend/src/App.tsx](./frontend/src/App.tsx)
-- [frontend/src/components/pipeline/AutoModeStudio.tsx](./frontend/src/components/pipeline/AutoModeStudio.tsx)
-- [frontend/src/components/dashboard/UsageDashboardPage.tsx](./frontend/src/components/dashboard/UsageDashboardPage.tsx)
+- [frontend/src/main.ts](./frontend/src/main.ts)
+- [frontend/src/App.vue](./frontend/src/App.vue)
+- [frontend/src/components/pipeline/AutoModeStudio.vue](./frontend/src/components/pipeline/AutoModeStudio.vue)
+- [frontend/src/components/dashboard/UsageDashboardPage.vue](./frontend/src/components/dashboard/UsageDashboardPage.vue)
 
 ### Backend
 

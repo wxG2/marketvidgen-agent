@@ -1,16 +1,16 @@
-import { create } from 'zustand'
+import { reactive } from 'vue'
 import type { Project } from '../types'
 
-interface ProjectStore {
-  project: Project | null
-  setProject: (p: Project | null) => void
-  currentStep: number
-  setCurrentStep: (step: number) => void
+export const projectStore = reactive({
+  project: null as Project | null,
+  currentStep: 1,
+})
+
+export function setProject(project: Project | null) {
+  projectStore.project = project
+  projectStore.currentStep = project?.current_step ?? 1
 }
 
-export const useProjectStore = create<ProjectStore>((set) => ({
-  project: null,
-  setProject: (project) => set({ project, currentStep: project?.current_step ?? 1 }),
-  currentStep: 1,
-  setCurrentStep: (currentStep) => set({ currentStep }),
-}))
+export function setCurrentStep(currentStep: number) {
+  projectStore.currentStep = currentStep
+}

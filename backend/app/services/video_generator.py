@@ -8,13 +8,15 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 import httpx
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+TRANSIENT_HTTP_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 
 
 @dataclass
@@ -34,7 +36,15 @@ class GenerationStatus:
 
 class VideoGenerator(ABC):
     @abstractmethod
-    async def generate(self, image_path: str, prompt: str, duration: int = 5, no_audio: bool = True) -> GenerationTask:
+    async def generate(
+        self,
+        image_path: str,
+        prompt: str,
+        duration: int = 5,
+        no_audio: bool = True,
+        generation_model: str | None = None,
+        platform: str = "generic",
+    ) -> GenerationTask:
         ...
 
     @abstractmethod
@@ -55,13 +65,74 @@ def _validate_reference_image(file_path: str) -> Path:
     return path
 
 
+def _describe_httpx_error(exc: httpx.HTTPError) -> str:
+    message = str(exc).strip()
+    if message:
+        return message
+    args = ", ".join(repr(arg) for arg in exc.args if arg not in ("", None))
+    if args:
+        return f"{exc.__class__.__name__}: {args}"
+    return exc.__class__.__name__
+
+
+async def _request_with_retries(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    *,
+    operation: str,
+    **kwargs,
+) -> httpx.Response:
+    attempts = max(int(settings.VIDEO_GENERATION_HTTP_RETRIES), 0) + 1
+    backoff = max(float(settings.VIDEO_GENERATION_HTTP_RETRY_BACKOFF_SECONDS), 0.1)
+    last_error: str | None = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            response = await client.request(method, url, **kwargs)
+            if response.status_code in TRANSIENT_HTTP_STATUS_CODES and attempt < attempts:
+                last_error = f"HTTP {response.status_code}: {response.text[:300]}"
+                logger.warning(
+                    "%s transient response on attempt %s/%s: %s",
+                    operation,
+                    attempt,
+                    attempts,
+                    last_error,
+                )
+                await asyncio.sleep(backoff * attempt)
+                continue
+            return response
+        except httpx.TransportError as exc:
+            last_error = _describe_httpx_error(exc)
+            if attempt >= attempts:
+                raise RuntimeError(f"{operation} failed after {attempts} attempts: {last_error}") from exc
+            logger.warning(
+                "%s transport failure on attempt %s/%s: %s",
+                operation,
+                attempt,
+                attempts,
+                last_error,
+            )
+            await asyncio.sleep(backoff * attempt)
+
+    raise RuntimeError(f"{operation} failed after {attempts} attempts: {last_error or 'unknown error'}")
+
+
 class MockVideoGenerator(VideoGenerator):
     """Mock generator that simulates video generation with a delay."""
 
     def __init__(self):
         self._tasks: dict[str, dict] = {}
 
-    async def generate(self, image_path: str, prompt: str, duration: int = 5, no_audio: bool = True) -> GenerationTask:
+    async def generate(
+        self,
+        image_path: str,
+        prompt: str,
+        duration: int = 5,
+        no_audio: bool = True,
+        generation_model: str | None = None,
+        platform: str = "generic",
+    ) -> GenerationTask:
         task_id = str(uuid.uuid4())
         self._tasks[task_id] = {
             "status": "processing",
@@ -100,8 +171,11 @@ class Kling3Generator(VideoGenerator):
         file_bytes = path.read_bytes()
 
         async with httpx.AsyncClient(timeout=120) as client:
-            response = await client.post(
+            response = await _request_with_retries(
+                client,
+                "POST",
                 self.MEDIA_UPLOAD_URL,
+                operation="WaveSpeed media upload",
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 files={"file": (path.name, file_bytes, mime)},
             )
@@ -118,7 +192,15 @@ class Kling3Generator(VideoGenerator):
             raise RuntimeError(f"WaveSpeed media upload did not return download_url: {data}")
         return download_url
 
-    async def generate(self, image_path: str, prompt: str, duration: int = 5, no_audio: bool = True) -> GenerationTask:
+    async def generate(
+        self,
+        image_path: str,
+        prompt: str,
+        duration: int = 5,
+        no_audio: bool = True,
+        generation_model: str | None = None,
+        platform: str = "generic",
+    ) -> GenerationTask:
         # WaveSpeed Kling API requires a publicly accessible image URL
         image_url = await self._upload_image(image_path)
 
@@ -130,8 +212,11 @@ class Kling3Generator(VideoGenerator):
             "sound": not no_audio,
         }
         async with httpx.AsyncClient(timeout=180) as client:
-            response = await client.post(
+            response = await _request_with_retries(
+                client,
+                "POST",
                 f"{self.api_url}/{self.model}",
+                operation="WaveSpeed task create",
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
@@ -165,8 +250,11 @@ class Kling3Generator(VideoGenerator):
         poll_url = self._poll_urls.get(task_id, f"{self.api_url}/predictions/{task_id}")
 
         async with httpx.AsyncClient(timeout=120) as client:
-            response = await client.get(
+            response = await _request_with_retries(
+                client,
+                "GET",
                 poll_url,
+                operation="WaveSpeed task poll",
                 headers={"Authorization": f"Bearer {self.api_key}"},
             )
             response.raise_for_status()
@@ -222,30 +310,115 @@ class SeedanceGenerator(VideoGenerator):
         encoded = base64.b64encode(path.read_bytes()).decode("utf-8")
         return f"data:{mime};base64,{encoded}"
 
-    async def generate(self, image_path: str, prompt: str, duration: int = 5, no_audio: bool = True) -> GenerationTask:
-        image_data_url = self._file_to_data_url(image_path)
+    def _is_seedance_2(self) -> bool:
+        return "seedance-2-0" in self.model or "seedance2" in self.model.replace("-", "")
+
+    @staticmethod
+    def _ratio_for_platform(platform: str) -> str:
+        ratios = {
+            "douyin": "9:16",
+            "xiaohongshu": "3:4",
+            "bilibili": "16:9",
+            "generic": "16:9",
+        }
+        return ratios.get(platform or "generic", "16:9")
+
+    def _build_seedance_15_payload(
+        self,
+        *,
+        image_data_url: str,
+        prompt: str,
+        duration: int,
+        no_audio: bool,
+    ) -> dict:
         supported = settings.SEEDANCE_SUPPORTED_DURATIONS
         actual_duration = min(supported, key=lambda s: abs(s - max(duration, min(supported))))
-
-        # Seedance embeds parameters as flags in the text prompt
         noaudio_flag = "true" if no_audio else "false"
         text_with_flags = f"{prompt}  --duration {actual_duration} --noaudio {noaudio_flag} --camerafixed false --watermark false"
-
-        content = [
-            {"type": "text", "text": text_with_flags},
-            {
-                "type": "image_url",
-                "image_url": {"url": image_data_url},
-            },
-        ]
-        payload = {
+        return {
             "model": self.model,
-            "content": content,
+            "content": [
+                {"type": "text", "text": text_with_flags},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": image_data_url},
+                },
+            ],
         }
 
+    def _build_seedance_20_payload(
+        self,
+        *,
+        image_data_url: str,
+        prompt: str,
+        duration: int,
+        no_audio: bool,
+        platform: str,
+    ) -> dict:
+        return {
+            "model": self.model,
+            "content": [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": image_data_url},
+                    "role": "reference_image",
+                },
+            ],
+            "generate_audio": not no_audio,
+            "ratio": self._ratio_for_platform(platform),
+            "duration": max(int(duration or 1), 1),
+            "watermark": False,
+        }
+
+    def _build_payload(
+        self,
+        *,
+        image_data_url: str,
+        prompt: str,
+        duration: int,
+        no_audio: bool,
+        platform: str,
+    ) -> dict:
+        if self._is_seedance_2():
+            return self._build_seedance_20_payload(
+                image_data_url=image_data_url,
+                prompt=prompt,
+                duration=duration,
+                no_audio=no_audio,
+                platform=platform,
+            )
+        return self._build_seedance_15_payload(
+            image_data_url=image_data_url,
+            prompt=prompt,
+            duration=duration,
+            no_audio=no_audio,
+        )
+
+    async def generate(
+        self,
+        image_path: str,
+        prompt: str,
+        duration: int = 5,
+        no_audio: bool = True,
+        generation_model: str | None = None,
+        platform: str = "generic",
+    ) -> GenerationTask:
+        image_data_url = self._file_to_data_url(image_path)
+        payload = self._build_payload(
+            image_data_url=image_data_url,
+            prompt=prompt,
+            duration=duration,
+            no_audio=no_audio,
+            platform=platform,
+        )
+
         async with httpx.AsyncClient(timeout=180) as client:
-            response = await client.post(
+            response = await _request_with_retries(
+                client,
+                "POST",
                 f"{self.base_url}/contents/generations/tasks",
+                operation="Seedance task create",
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
@@ -272,8 +445,11 @@ class SeedanceGenerator(VideoGenerator):
 
     async def poll_status(self, task_id: str) -> GenerationStatus:
         async with httpx.AsyncClient(timeout=120) as client:
-            response = await client.get(
+            response = await _request_with_retries(
+                client,
+                "GET",
                 f"{self.base_url}/contents/generations/tasks/{task_id}",
+                operation="Seedance task poll",
                 headers={"Authorization": f"Bearer {self.api_key}"},
             )
             if response.status_code != 200:
@@ -316,3 +492,93 @@ class SeedanceGenerator(VideoGenerator):
             video_url=video_url,
             error=error_msg,
         )
+
+
+class VideoGeneratorRouter(VideoGenerator):
+    """Route generation calls to the configured backend by per-run model choice."""
+
+    def __init__(
+        self,
+        *,
+        default_model: str,
+        seedance_15: VideoGenerator | None = None,
+        seedance_20: VideoGenerator | None = None,
+        kling: VideoGenerator | None = None,
+        fallback: VideoGenerator | None = None,
+        kling_model_name: str = "kling-v3",
+        seedance_15_model_name: str = "doubao-seedance-1-5-pro-251215",
+        seedance_20_model_name: str = "doubao-seedance-2-0-260128",
+    ) -> None:
+        self.default_model = default_model or "seedance1.5-pro"
+        self._generators: dict[str, VideoGenerator] = {}
+        self._task_generators: dict[str, VideoGenerator] = {}
+        self._fallback = fallback
+        self._aliases: dict[str, str] = {}
+
+        if seedance_15 is not None:
+            self._register(
+                "seedance1.5-pro",
+                seedance_15,
+                aliases=["seedance", "seedance1.5", "seedance-1.5-pro", seedance_15_model_name],
+            )
+        if seedance_20 is not None:
+            self._register(
+                "seedance2.0",
+                seedance_20,
+                aliases=["seedance2", "seedance-2.0", seedance_20_model_name],
+            )
+        if kling is not None:
+            self._register("kling", kling, aliases=["wavespeed", "kling3", kling_model_name])
+
+    @staticmethod
+    def _normalize_model(value: str | None) -> str:
+        return (value or "").strip().lower().replace("_", "-")
+
+    def _register(self, key: str, generator: VideoGenerator, aliases: list[str]) -> None:
+        normalized_key = self._normalize_model(key)
+        self._generators[normalized_key] = generator
+        self._aliases[normalized_key] = normalized_key
+        for alias in aliases:
+            normalized_alias = self._normalize_model(alias)
+            if normalized_alias:
+                self._aliases[normalized_alias] = normalized_key
+
+    def _select_generator(self, generation_model: str | None) -> tuple[str, VideoGenerator]:
+        requested = self._normalize_model(generation_model or self.default_model)
+        canonical = self._aliases.get(requested)
+        if canonical and canonical in self._generators:
+            return canonical, self._generators[canonical]
+        if not generation_model and self._fallback is not None:
+            return "mock", self._fallback
+        available = ", ".join(sorted(self._generators)) or "none"
+        raise RuntimeError(
+            f"Video generation model '{generation_model or self.default_model}' is not configured. "
+            f"Available models: {available}."
+        )
+
+    async def generate(
+        self,
+        image_path: str,
+        prompt: str,
+        duration: int = 5,
+        no_audio: bool = True,
+        generation_model: str | None = None,
+        platform: str = "generic",
+    ) -> GenerationTask:
+        canonical, generator = self._select_generator(generation_model)
+        task = await generator.generate(
+            image_path=image_path,
+            prompt=prompt,
+            duration=duration,
+            no_audio=no_audio,
+            generation_model=canonical,
+            platform=platform,
+        )
+        self._task_generators[task.task_id] = generator
+        return task
+
+    async def poll_status(self, task_id: str) -> GenerationStatus:
+        generator = self._task_generators.get(task_id)
+        if generator is None:
+            return GenerationStatus(task_id=task_id, status="failed", error="Task generator not found")
+        return await generator.poll_status(task_id)

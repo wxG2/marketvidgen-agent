@@ -272,6 +272,9 @@ export interface PipelineConfig {
   duration_seconds: number
   duration_mode?: string
   no_audio?: boolean
+  video_model_no_audio?: boolean
+  voiceover_no_audio?: boolean
+  generation_model?: string
   style: string
   voice_id: string
   transition?: string
@@ -291,11 +294,8 @@ export interface PipelineRun {
   session_id?: string | null
   trace_id: string
   engine: string
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'waiting_confirmation'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'waiting_confirmation' | 'waiting_prompt_review'
   current_agent: string | null
-  swarm_state_json?: string | null
-  swarm_state?: Record<string, any> | null
-  latest_lead_message?: string | null
   overall_score: number | null
   final_video_path: string | null
   error_message: string | null
@@ -308,10 +308,10 @@ export interface PipelineRun {
 export interface AgentExecution {
   id: string
   agent_name: string
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'cancelled'
   attempt_number: number
-  input_data?: Record<string, any> | null
-  output_data?: Record<string, any> | null
+  input_data?: Record<string, unknown> | null
+  output_data?: Record<string, unknown> | null
   duration_ms: number | null
   error_message: string | null
   progress_text?: string | null
@@ -341,6 +341,28 @@ export interface RepositoryDelivery {
   status: string
   video_url: string | null
   created_at: string
+}
+
+export interface RepositoryAsset {
+  id: string
+  user_id: string
+  project_id: string
+  project_name?: string | null
+  pipeline_run_id: string
+  asset_key: string
+  asset_type: string
+  source_agent: string
+  title: string | null
+  description: string | null
+  mime_type: string | null
+  file_path: string | null
+  file_url: string | null
+  file_size: number | null
+  text_content: string | null
+  metadata: Record<string, unknown>
+  duration_ms: number | null
+  created_at: string
+  updated_at: string
 }
 
 export interface PipelineUsageByAgent {
@@ -394,12 +416,12 @@ export interface VideoDeliveryRecord {
   social_account_id?: string | null
   title: string | null
   description: string | null
-  draft_payload?: Record<string, any> | null
+  draft_payload?: Record<string, unknown> | null
   saved_video_path: string | null
   external_id: string | null
   external_url: string | null
   external_status?: string | null
-  response_payload?: Record<string, any> | null
+  response_payload?: Record<string, unknown> | null
   platform_error_code?: string | null
   error_message: string | null
   submitted_at?: string | null
@@ -468,12 +490,39 @@ export interface AutoChatMessageFilePayload {
   mimeType?: string | null
 }
 
+export interface DirectorPlanShot {
+  shot_idx: number
+  duration_seconds: number
+  duration_range_label?: string
+  generation_duration_seconds?: number
+  script_segment?: string
+  video_prompt?: string
+  source_image_idx?: number
+}
+
+export interface DirectorPlanVoiceDesign {
+  voice_id?: string
+  speed?: number
+  tone?: string
+}
+
+export interface DirectorPlan {
+  run_id: string
+  shot_prompts: DirectorPlanShot[]
+  voice_design: DirectorPlanVoiceDesign
+  director_summary?: string
+  creative_concept?: string
+  pacing_strategy?: string
+  narration_script?: string
+}
+
 export interface AutoChatMessagePayload {
   mutedLines?: string[]
   images?: AutoChatMessageImagePayload[]
   files?: AutoChatMessageFilePayload[]
   video?: AutoChatMessageVideoPayload | null
   publishDraft?: PublishDraft | null
+  directorPlan?: DirectorPlan | null
 }
 
 export interface AutoChatSessionState {
@@ -482,6 +531,9 @@ export interface AutoChatSessionState {
   reference_video_id: string | null
   video_platform: string
   video_no_audio: boolean
+  video_model_no_audio?: boolean
+  voiceover_no_audio?: boolean
+  generation_model?: string
   duration_mode: string
   video_transition: string
   bgm_mood: string
@@ -596,12 +648,12 @@ export type ChatEventType = 'reasoning' | 'tool_call' | 'tool_result' | 'tool_pr
 
 export interface ChatStreamEvent {
   event: ChatEventType
-  data: Record<string, any>
+  data: Record<string, unknown>
 }
 
 export interface ToolCallInfo {
   tool_name: string
-  input: Record<string, any>
+  input: Record<string, unknown>
   call_id: string
   result?: string
   media_urls?: string[]
