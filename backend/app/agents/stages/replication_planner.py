@@ -8,8 +8,6 @@ import re
 from pathlib import Path
 from typing import TypeVar
 
-_T = TypeVar("_T")
-
 from sqlalchemy import select
 
 from app.agents.core.base import AgentContext, AgentResult, BaseAgent
@@ -21,6 +19,8 @@ from app.models.video_upload import VideoUpload
 from app.prompts import VIDEO_ANALYSIS_SYSTEM_PROMPT, VIDEO_REPLICATION_SYSTEM_PROMPT
 from app.services.keyframe_extractor import KeyframeExtractor
 from app.services.llm_service import LLMService
+
+_T = TypeVar("_T")
 
 logger = logging.getLogger(__name__)
 

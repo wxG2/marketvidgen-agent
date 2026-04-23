@@ -12,7 +12,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from app.mcp.server import mcp, list_materials, get_pipeline_status, search_project_history, list_agent_tools
+from app.mcp.server import list_materials, get_pipeline_status, search_project_history, list_agent_tools
 
 mcp_router = APIRouter(prefix="/mcp", tags=["MCP"])
 

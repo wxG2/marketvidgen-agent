@@ -23,19 +23,16 @@ Add to Claude Desktop config (~/Library/Application Support/Claude/claude_deskto
       }
     }
 """
-from __future__ import annotations
 
-import asyncio
 import json
 import os
 import sys
-from typing import Any
 
 # Ensure the backend directory is on the path when run as __main__
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from mcp.server.fastmcp import FastMCP
-from sqlalchemy import or_, select, text
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.material import Material

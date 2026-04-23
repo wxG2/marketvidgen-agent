@@ -42,7 +42,6 @@ class Qwen3VLAnalyzer(VideoAnalyzer):
         self.api_url = api_url
 
     async def analyze(self, video_path: str, available_categories: list[str]) -> AnalysisResult:
-        import httpx
         # TODO: Extract key frames, encode as base64, call Qwen3VL API
         # For now, raise not implemented
         raise NotImplementedError("Qwen3VL integration pending - configure API key and URL")

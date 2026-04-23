@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import uuid
 from datetime import datetime, timezone
 from typing import List
 
@@ -137,7 +136,7 @@ def get_generation_router(generator: VideoGenerator) -> APIRouter:
         await get_project_for_user(db, user.id, project_id)
         result = await db.execute(
             select(GeneratedVideo)
-            .where(GeneratedVideo.project_id == project_id, GeneratedVideo.is_selected == True)
+            .where(GeneratedVideo.project_id == project_id, GeneratedVideo.is_selected)
             .order_by(GeneratedVideo.created_at)
         )
         responses = []

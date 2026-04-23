@@ -19,6 +19,7 @@ import type {
   ProjectUsageSummary,
 } from '../../types'
 import { toast } from '../../composables/useToast'
+import ApiKeyManagementPanel from './ApiKeyManagementPanel.vue'
 
 const props = defineProps<{
   currentProjectId: string
@@ -29,7 +30,7 @@ const emit = defineEmits<{
   back: []
 }>()
 
-const tab = ref<'dashboard' | 'profile'>('dashboard')
+const tab = ref<'dashboard' | 'profile' | 'apiKeys'>('dashboard')
 const projects = ref<Project[]>([])
 const selectedProjectId = ref<string | null>(props.currentProjectId)
 const summary = ref<ProjectUsageSummary | null>(null)
@@ -201,7 +202,7 @@ watch(selectedProjectId, refreshUsage)
         </button>
         <div>
           <h2 class="text-lg font-semibold">仪表盘</h2>
-          <p class="text-sm text-[#867351]">项目消耗、历史产物和个人设置。</p>
+          <p class="text-sm text-[#867351]">项目消耗、历史产物、个人设置和 API Key 管理。</p>
         </div>
       </div>
       <div class="rounded-lg bg-[#f2e8d6] p-1">
@@ -210,6 +211,9 @@ watch(selectedProjectId, refreshUsage)
         </button>
         <button type="button" class="rounded-md px-3 py-2 text-sm" :class="tab === 'profile' ? 'bg-white shadow-sm' : ''" @click="tab = 'profile'">
           个人中心
+        </button>
+        <button type="button" class="rounded-md px-3 py-2 text-sm" :class="tab === 'apiKeys' ? 'bg-white shadow-sm' : ''" @click="tab = 'apiKeys'">
+          API Keys
         </button>
       </div>
     </header>
@@ -280,7 +284,7 @@ watch(selectedProjectId, refreshUsage)
         </template>
       </template>
 
-      <template v-else>
+      <template v-else-if="tab === 'profile'">
         <section class="mb-6 rounded-lg border border-[#d7c7a8] bg-white/85 p-5">
           <h3 class="mb-3 font-semibold">当前账号</h3>
           <div class="grid gap-3 text-sm md:grid-cols-2">
@@ -390,6 +394,10 @@ watch(selectedProjectId, refreshUsage)
             </button>
           </article>
         </section>
+      </template>
+
+      <template v-else>
+        <ApiKeyManagementPanel :current-user="currentUser" :users="users" />
       </template>
     </main>
   </section>

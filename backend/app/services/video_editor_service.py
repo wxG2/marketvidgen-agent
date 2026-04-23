@@ -4,11 +4,9 @@ import asyncio
 import json
 import logging
 import os
-import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from app.prompts import VIDEO_EDITOR_SYSTEM_PROMPT
 

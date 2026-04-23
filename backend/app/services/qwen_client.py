@@ -312,7 +312,6 @@ class QwenClient:
 
             choice = data["choices"][0]
             message = choice["message"]
-            finish_reason = choice.get("finish_reason", "stop")
 
             # Check for tool calls
             tool_calls = message.get("tool_calls")

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from app.prompts import GENERIC_PROMPT_GENERATION_SYSTEM_PROMPT
@@ -79,7 +78,6 @@ class MockLLMService(LLMService):
         await asyncio.sleep(1)
         selections = context.get("selections", [])
         analysis_summary = context.get("analysis_summary", "商业宣传视频")
-        user_intent = context.get("user_intent", "")
 
         prompts = []
         for sel in selections:

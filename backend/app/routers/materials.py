@@ -18,7 +18,7 @@ from app.models.material import Material
 from app.models.material_selection import MaterialSelection
 from app.models.user import User
 from app.schemas.material import (
-    MaterialResponse, CategoryResponse, MaterialSelectRequest,
+    CategoryResponse, MaterialSelectRequest,
     MaterialSelectionResponse, MaterialsPageResponse, MaterialUploadResponse,
 )
 from app.services.material_service import (

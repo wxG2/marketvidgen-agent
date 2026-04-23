@@ -7,7 +7,7 @@ capy 是一个面向短视频生产的 AI 工作台，目前提供两种工作�
 - `一键生成`：通过对话式界面，直接用脚本和图片素材生成视频
 - `手动模式`：按上传、分析、选素材、写提示词、生成、剪辑的步骤逐步完成
 
-当前项目采用 Vue + Vite 前端和 FastAPI 后端。后端通过多 agent 流水线完成规划、复刻方案拆解、提示词设计、音频字幕生成、分镜视频生成、最终剪辑和质量审核。
+当前项目采用 Vue + Vite 前端和 FastAPI 后端。后端通过多 agent 流水线完成规划、复刻方案拆解、提示词设计、音频字幕生成、分镜视频生成、最终剪辑和质量审核；同时已经补齐 MCP Server、基于 Qdrant 的 RAG 检索增强、Analytics API、结构化日志以及 Docker / CI 基础工程化。
 
 ## 给项目经理的快速导览
 
@@ -15,12 +15,13 @@ vidgen 不是单点的视频模型调用 Demo，而是一套围绕“项目、�
 
 当前产品最完整的主链路是“自动模式一键生成”：素材选择和会话状态由前端持久化，ChatAgent 负责判断用户是在普通对话、视频分析、参考视频复刻还是正式生成，PipelineExecutor / LangGraphPipelineExecutor 再调度各阶段 Agent。默认编排引擎是 `langgraph`，默认视频模型选择是 `Seedance 1.5 Pro`，PromptEngineer 完成镜头方案后默认会暂停在 `waiting_prompt_review`，用户确认后才继续进入音频、视频、剪辑和 QA。
 
-面向管理和验收，系统已经具备本地账号隔离、项目历史、模型用量统计、Agent 进度追踪、中间产物仓库、成片仓库、抖音授权发布草稿、管理员用户管理和外部 API Key 调用。面向工程扩展，系统将外部模型、媒体处理、Agent 状态、运行时 skill、语义记忆和交付发布拆成独立模块，后续替换模型或增加平台时不需要重写整条业务流。
+面向管理和验收，系统已经具备本地账号隔离、项目历史、模型用量统计、Agent 进度追踪、中间产物仓库、成片仓库、抖音授权发布草稿、管理员用户管理和外部 API Key 调用。最近还新增了 MCP Server（用于把内部能力开放给外部 Agent 客户端）、Analytics API（用于看各 Agent 成功率、耗时和 Token 消耗）以及结构化日志链路。面向工程扩展，系统将外部模型、媒体处理、Agent 状态、运行时 skill、语义记忆、观测指标和交付发布拆成独立模块，后续替换模型或增加平台时不需要重写整条业务流。
 
 ## 功能亮点
 
 - 本地账号体系与 Cookie Session 登录，项目、素材、模板、历史按账号隔离
 - 外部视频生成 API v1：调用方可用 `vg_` 前缀 API Key 一次性上传多张素材并创建视频任务，任务默认进入审核态，确认后继续生成并通过受保护接口下载成片
+- 仪表盘新增独立 `API Keys` 页签：普通用户可自助创建、查看、停用外部调用凭证；管理员可按客户账号单独创建和管理 API Key
 - 对话式一键生成界面，可在同一页面上传素材、选图、输入脚本并触发生成
 - 提示词对话接口与自动模式中的普通 assistant 对话，在真实 Qwen 模式下都支持服务端流式返回，前端可逐段展示生成中的文本；自动模式还会在 skill 路由、参数提取和模型调用前输出灰字状态，便于确认请求是否已进入模型链路
 - 自动模式 assistant 现在按 Claude 风格的目录式 runtime skills 工作：启动时只读取 `SKILL.md` frontmatter，命中后再按需加载 `SKILL.md` 正文、`schema.json` 和 `runtime.py`，避免每次都把全部 tool 定义发给模型
@@ -31,6 +32,11 @@ vidgen 不是单点的视频模型调用 Demo，而是一套围绕“项目、�
 - 个人中心角色背景模板库，支持预设角色模板、关键词自动生成人设草稿和任务后增量学习
 - 手动模式，适合希望逐步控制每个环节的创作者
 - 当前 Vue 自动模式界面默认视频生成模型为 `Seedance 1.5 Pro`，可在 `Seedance 1.5 Pro` / `Seedance 2.0` / `Kling v3` / `mock` 间选择
+- MCP Server：通过 stdio 暴露 `list_materials`、`get_pipeline_status`、`search_project_history`、`list_agent_tools` 4 个工具，并提供 `GET /mcp/tools` 发现端点
+- RAG 检索增强：Orchestrator 在生成方案前可检索历史相似项目作为 prompt 上下文；Qdrant 或 embedding 服务不可用时自动降级为空结果，不阻断主流程
+- Analytics API：提供总览、各 Agent 成功率 / 耗时、QA 通过率、Token 消耗明细、Pipeline 趋势 5 个观测端点
+- 结构化日志：支持 `LOG_FORMAT=text|json`，每个请求自动注入 `X-Request-ID`，方便排查长任务问题
+- Docker / CI：已提供 backend / frontend / Qdrant 的 `docker-compose.yml`，并有 GitHub Actions 执行 lint、pytest、前端 build 和 Docker image build
 - 多 agent 流水线：
   - `orchestrator`
   - `replication_planner`
@@ -68,6 +74,14 @@ vidgen 不是单点的视频模型调用 Demo，而是一套围绕“项目、�
   当前已从“固定 `.env` token 发布”切换为“用户级抖音账号授权 + 发布草稿确认 + 按授权账号发布”。
 - 外部 API：
   当前已提供 `/v1/video-jobs`，使用 `Authorization: Bearer vg_...` 鉴权。调用方以 `multipart/form-data` 提交 `spec` JSON 和 `images` 文件；后端会自动创建私有项目、导入素材并启动同一条 pipeline。普通生成会停在 `shot_plan` 审核，带参考视频的复刻生成会停在 `replication_plan` 审核，确认后继续执行，最终视频只通过 `/v1/video-jobs/{job_id}/result` 下载。
+- MCP 与开放工具发现：
+  当前已提供 stdio MCP Server，可暴露 `list_materials`、`get_pipeline_status`、`search_project_history`、`list_agent_tools` 4 个工具；同时也提供 `GET /mcp/tools` 作为 HTTP 发现端点，方便调试和非 MCP 客户端查看 tool schema。
+- 历史项目检索增强：
+  当前 `RagService` 已实现基于 Qdrant + Qwen `text-embedding-v3` 的 index / retrieve / prompt formatting 能力；`OrchestratorAgent` 在普通生成前会尝试检索相似历史方案作为 few-shot context。若未配置 `QWEN_API_KEY`、Qdrant 不可达或初始化失败，系统会自动退回无检索模式。
+- Agent 可观测性 API：
+  当前已提供 `/api/analytics/overview`、`/api/analytics/agents`、`/api/analytics/qa`、`/api/analytics/token-usage`、`/api/analytics/pipeline-trends`，用于查看运行数、成功率、Agent 耗时、QA 结果和模型 Token 消耗。
+- 容器化与基础 CI：
+  当前仓库已包含 backend / frontend Dockerfile、多服务 `docker-compose.yml` 和 GitHub Actions CI；适合本地联调或向面试、演示环境快速交付。
 
 ## 架构说明
 
@@ -91,7 +105,9 @@ vidgen 不是单点的视频模型调用 Demo，而是一套围绕“项目、�
 - FastAPI
 - SQLAlchemy Async
 - 默认使用 SQLite
-- 通过 `httpx` 调用第三方模型服务
+- 可选接入 Qdrant，用于 Mem0 语义记忆与 RAG 历史方案检索
+- 通过 `httpx` 调用第三方模型服务和 Qdrant REST API
+- 支持 structlog 结构化日志、MCP Server、Analytics API
 
 主要入口文件：
 
@@ -99,6 +115,8 @@ vidgen 不是单点的视频模型调用 Demo，而是一套围绕“项目、�
 - [backend/app/README.md](./backend/app/README.md)
 - [backend/app/agents/README.md](./backend/app/agents/README.md)
 - [backend/app/services/qwen_client.py](./backend/app/services/qwen_client.py)
+- [backend/app/mcp/server.py](./backend/app/mcp/server.py)
+- [backend/app/routers/analytics.py](./backend/app/routers/analytics.py)
 
 ## Agent 流水线
 
@@ -152,6 +170,41 @@ vidgen 不是单点的视频模型调用 Demo，而是一套围绕“项目、�
 - [backend/app/services/tts_service.py](./backend/app/services/tts_service.py)
 - [backend/app/services/video_generator.py](./backend/app/services/video_generator.py)
 
+## MCP、观测与工程化
+
+### MCP Server
+
+- 当前 MCP server 位于 `backend/app/mcp/server.py`，可通过 stdio 方式运行并接入 Claude Desktop 等 MCP 客户端
+- 已暴露 4 个工具：`list_materials`、`get_pipeline_status`、`search_project_history`、`list_agent_tools`
+- 同时提供 `GET /mcp/tools` HTTP 发现端点，返回工具名、描述和输入 schema，便于调试
+
+如果你已经激活后端虚拟环境，可单独启动 MCP server：
+
+```bash
+cd backend
+source venv/bin/activate
+python -m app.mcp.server
+```
+
+### Analytics API
+
+当前后端提供以下观测端点：
+
+- `GET /api/analytics/overview`
+- `GET /api/analytics/agents`
+- `GET /api/analytics/qa`
+- `GET /api/analytics/token-usage`
+- `GET /api/analytics/pipeline-trends`
+
+这些接口主要用于查看 Pipeline 运行数、Agent 成功率 / 耗时、QA 通过率、Token 消耗和趋势图数据。
+
+### 日志、容器与 CI
+
+- 后端已切换为 structlog 结构化日志，支持 `LOG_FORMAT=text|json`
+- 每个 HTTP 请求会自动注入 `X-Request-ID` 响应头，便于关联日志和问题排查
+- 仓库已提供 backend / frontend / Qdrant 三服务 `docker-compose.yml`
+- GitHub Actions 会执行 backend lint + pytest、frontend lint + build，以及 Docker image build
+
 ## 项目结构
 
 ```text
@@ -177,6 +230,29 @@ vidgen/
 
 ## 本地启动
 
+### 0. 推荐：使用 Docker Compose
+
+如果你想快速拉起完整联调环境，推荐直接使用仓库根目录的 `docker-compose.yml`：
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+默认端口：
+
+- 前端：`http://localhost`
+- 后端：`http://localhost:8000`
+- Qdrant：`http://localhost:6333`
+
+其中 `docker-compose` 会自动启动：
+
+- `frontend`：Vite 构建产物 + Nginx
+- `backend`：FastAPI + FFmpeg
+- `qdrant`：供 Mem0 / RAG 使用的向量检索服务
+
+如果你只想体验主流程，也可以保留 `.env.example` 中的 mock 配置，不填真实模型 key 直接运行。
+
 ### 1. 启动后端
 
 ```bash
@@ -188,6 +264,7 @@ uvicorn app.main:app --reload
 ```
 
 后端会从项目根目录的 `.env` 读取环境变量。
+如果你希望在手动启动模式下启用 Mem0 语义记忆和 RAG 检索，建议另外先启动一个本地 Qdrant；如果没有 Qdrant，系统会记录 warning 并自动退回无向量检索模式，不影响主流程。
 
 ### 2. 启动前端
 
@@ -206,7 +283,9 @@ npm run dev
 
 ## 外部 API 调用
 
-登录后可通过 `/api/api-keys` 创建外部调用凭证，管理员也可以通过 `/api/admin/api-keys` 为指定用户创建和禁用凭证。明文 API Key 只在创建时返回，服务端只保存哈希。默认 scope 为 `video_jobs:create`、`video_jobs:read`、`video_jobs:review`；也可以显式传入更小权限集合。
+登录后可在前端“仪表盘 -> API Keys”页签创建和管理外部调用凭证：普通用户可管理自己的 key，管理员可切到“客户密钥”视图为指定用户创建和停用 key。明文 API Key 只在创建成功时展示一次，服务端只保存哈希；后续列表只显示前缀、状态、scope 和最后使用时间。默认 scope 为 `video_jobs:create`、`video_jobs:read`、`video_jobs:review`；也可以通过后端接口显式传入更小权限集合。
+
+如果你需要脚本化集成，仍然可以直接调用 `/api/api-keys` 和 `/api/admin/api-keys`：
 
 ```bash
 curl -X POST http://localhost:8000/api/api-keys \
@@ -228,6 +307,10 @@ curl -X POST http://localhost:8000/v1/video-jobs \
 
 外部任务会返回 `job_id`。使用 `GET /v1/video-jobs/{job_id}` 查询状态；当状态为 `requires_review` 时，调用 `POST /v1/video-jobs/{job_id}/review` 审核分镜或复刻方案；完成后通过 `GET /v1/video-jobs/{job_id}/result` 下载 mp4。状态接口和审核数据会脱敏，不返回本机绝对路径。
 
+更完整的发放和第三方接入说明见：
+
+- [THIRD_PARTY_API_INTEGRATION.zh-CN.md](./THIRD_PARTY_API_INTEGRATION.zh-CN.md)
+
 ## 环境变量
 
 在 `vidgen/.env` 中填写你要启用的模型服务配置。
@@ -246,8 +329,11 @@ QWEN_API_KEY=
 QWEN_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 QWEN_OMNI_MODEL=qwen3-omni-flash
 QWEN_TTS_MODEL=qwen3-tts-flash
+LOG_FORMAT=text
 MEM0_ENABLED=true
 MEM0_EMBEDDING_MODEL=text-embedding-v3
+MEM0_QDRANT_HOST=localhost
+MEM0_QDRANT_PORT=6333
 
 WAVESPEED_API_KEY=
 WAVESPEED_API_URL=https://api.wavespeed.ai/api/v3
@@ -274,15 +360,16 @@ DOUYIN_REDIRECT_URI=https://your-domain.example/api/social-accounts/douyin/callb
 DOUYIN_DEFAULT_SCOPE=user_info,video.create
 FRONTEND_BASE_URL=http://127.0.0.1:5173
 
-USE_MOCK_ANALYZER=false
-USE_MOCK_LLM=false
-USE_MOCK_GENERATOR=false
-USE_MOCK_TTS=false
-USE_MOCK_VIDEO_EDITOR=false
-USE_MOCK_COMPOSITOR=false
+USE_MOCK_ANALYZER=true
+USE_MOCK_LLM=true
+USE_MOCK_GENERATOR=true
+USE_MOCK_TTS=true
+USE_MOCK_VIDEO_EDITOR=true
+USE_MOCK_COMPOSITOR=true
 USE_MOCK_LIPSYNC=true
 ```
 
+上面这组配置更适合“本地先跑通界面和流程”的开发模式；如果要接入真实模型，把对应 `USE_MOCK_*` 改成 `false`，并补齐相应 provider key。
 如果没有配置对应 key，部分服务会根据当前设置自动退回到 mock 实现。
 上传入口会按文件类型做扩展名、声明 MIME、文件头和大小校验；参考视频默认上限由 `MAX_UPLOAD_SIZE_MB` 控制，图片由 `MAX_IMAGE_SIZE_MB` 控制，Talking Head 音频由 `MAX_AUDIO_SIZE_MB` 控制，时间线资产由 `MAX_TIMELINE_ASSET_SIZE_MB` 控制。
 
@@ -361,6 +448,9 @@ cd frontend && npm run build
 - 抖音接口提交成功只表示 vidgen 已经把内容提交到开放平台，视频仍可能进入平台审核或仅自己可见阶段。
 - 当前仓库更偏向本地开发与功能验证，尚未针对生产部署做完整加固。
 - `PipelineCreateRequest` 已对平台、时长、生成模型、转场、BGM、音量等字段做 Pydantic 约束；不合法请求会在进入 Agent 流水线前返回 422。
+- RAG 历史检索与 Mem0 默认依赖 Qdrant；若你只做基础演示，可以不启动 Qdrant，系统会自动降级为无语义检索模式。
+- `GET /mcp/tools` 和 `/api/analytics/*` 都已经注册在主应用中，可直接用于演示开放能力和 Agent 可观测性。
+- 若要在生产或容器环境中收集日志，建议把 `LOG_FORMAT` 设为 `json`，便于接入日志平台。
 
 ## License
 

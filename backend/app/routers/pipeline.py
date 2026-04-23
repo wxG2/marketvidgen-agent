@@ -27,7 +27,6 @@ from app.auth import (
 )
 from app.config import settings
 from app.database import get_db
-from app.models.background_template import BackgroundTemplate
 from app.models.auto_chat import AutoChatSession
 from app.models.material import Material
 from app.models.pipeline import PipelineRun, AgentExecution
@@ -58,7 +57,6 @@ from app.schemas.pipeline import (
 from app.schemas.social_account import PublishDraftResponse, SocialAccountResponse
 from app.agents.pipeline import PipelineExecutor
 from app.services.video_delivery import (
-    build_douyin_publish_draft,
     build_platform_preview_cards,
     derive_delivery_title,
     publish_video_to_douyin,
@@ -1000,7 +998,6 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
         )
 
         if estimated_audio_s > effective_video_s * 1.3:
-            shortfall = estimated_audio_s - effective_video_s
             extra_needed = recommended_count - image_count
             if duration_mode == "fixed":
                 warning = (

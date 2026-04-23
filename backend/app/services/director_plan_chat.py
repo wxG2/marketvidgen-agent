@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.auto_chat import AutoChatMessage, AutoChatSession
 from app.models.pipeline import PipelineRun

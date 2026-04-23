@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import os
 import uuid
-from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,8 +15,7 @@ from app.models.timeline import TimelineClip, TimelineAsset
 from app.models.generated_video import GeneratedVideo
 from app.models.user import User
 from app.schemas.timeline import (
-    TimelineAssetResponse, TimelineClipResponse,
-    TimelineSaveRequest, TimelineResponse,
+    TimelineAssetResponse, TimelineSaveRequest, TimelineResponse,
 )
 from app.services.upload_validation import validate_upload_file
 

@@ -226,7 +226,6 @@ class PromptEngineerAgent(BaseAgent):
         }
 
         # ── User prompt ────────────────────────────────────────────────────
-        min_gen = settings.VIDEO_GEN_MIN_DURATION_SECONDS
         max_gen = settings.VIDEO_GEN_MAX_DURATION_SECONDS
 
         if existing_shots:
@@ -278,7 +277,7 @@ class PromptEngineerAgent(BaseAgent):
             + (f"## 参考脚本\n{explicit_script}\n\n" if explicit_script else "")
             + f"## {image_section}\n\n"
             + (f"## 背景信息\n{background_context}\n\n" if background_context else "")
-            + f"## 约束\n"
+            + "## 约束\n"
             + f"- 平台: {platform} | 风格: {style} | 视频类型: {video_type}\n"
             + duration_hint
             + constraint_block

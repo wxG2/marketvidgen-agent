@@ -13,6 +13,8 @@ __pycache__/
 backend/venv/
 backend/.pytest_cache/
 backend/.mypy_cache/
+backend/.coverage
+backend/coverage.xml
 backend/data/
 backend/app/data/
 

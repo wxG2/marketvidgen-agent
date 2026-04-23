@@ -5,7 +5,6 @@ import os
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
 
 from app.services.qwen_client import QwenClient
 

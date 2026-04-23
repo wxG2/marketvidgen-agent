@@ -4,8 +4,6 @@ import logging
 import os
 import re
 from abc import ABC, abstractmethod
-from pathlib import Path
-from typing import Optional
 
 from app.config import settings
 from app.services.media_utils import run_subprocess
@@ -104,8 +102,6 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
     ) -> list[dict]:
         if duration <= 0 or num_frames <= 0:
             return []
-        # Calculate frame interval to get evenly spaced frames
-        total_frames_cmd = f"select='not(mod(n\\,{max(1, int(1))}))'"
         # Use fps filter to get uniform frames
         fps_val = num_frames / duration if duration > 0 else 1
         pattern = os.path.join(output_dir, "uniform_%04d.jpg")

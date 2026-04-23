@@ -12,13 +12,12 @@ from fastapi import Depends, HTTPException, Request, Response, status
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import async_session, get_db
+from app.database import get_db
 from app.models.background_template import BackgroundTemplate
 from app.models.auto_chat import AutoChatSession
 from app.models.material import Material
 from app.models.pipeline import PipelineRun
 from app.models.project import Project
-from app.models.prompt import Prompt, PromptMessage
 from app.models.social_account import SocialAccount
 from app.models.user import User, UserSession
 

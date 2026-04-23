@@ -5,10 +5,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from app.logging_config import configure_logging
-
-configure_logging()
-
 from app.bootstrap import (
     create_analyzer,
     create_compositor,
@@ -22,6 +18,9 @@ from app.bootstrap import (
 )
 from app.config import settings
 from app.http import configure_exception_handlers, configure_middleware
+from app.logging_config import configure_logging
+from app.mcp.router import mcp_router
+from app.routers.analytics import router as analytics_router
 from app.routers import api_keys, examples, materials, projects, timeline, upload
 from app.routers.analysis import get_analysis_router
 from app.routers.auth import router as auth_router
@@ -35,8 +34,8 @@ from app.routers.repository import router as repository_router
 from app.routers.social_accounts import router as social_accounts_router
 from app.routers.system import router as system_router
 from app.routers.talking_head import get_talking_head_router
-from app.mcp.router import mcp_router
-from app.routers.analytics import router as analytics_router
+
+configure_logging()
 
 
 @asynccontextmanager

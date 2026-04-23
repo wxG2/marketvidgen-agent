@@ -15,10 +15,10 @@ jobs:
         working-directory: backend
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -46,11 +46,22 @@ jobs:
           LOG_FORMAT: "text"
         run: pytest tests/ -v --cov=app --cov-report=term-missing --cov-report=xml
 
-      - name: Upload coverage report
-        uses: codecov/codecov-action@v4
+      - name: Check coverage report
         if: always()
+        id: coverage
+        run: |
+          if [ -f coverage.xml ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v5
+        if: always() && steps.coverage.outputs.exists == 'true'
         with:
-          file: backend/coverage.xml
+          fail_ci_if_error: false
+          files: backend/coverage.xml
           flags: backend
 
   frontend:
@@ -61,10 +72,10 @@ jobs:
         working-directory: frontend
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Node.js 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "20"
           cache: npm
@@ -86,7 +97,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build backend image
         run: docker build -t vidgen-backend:${{ github.sha }} ./backend

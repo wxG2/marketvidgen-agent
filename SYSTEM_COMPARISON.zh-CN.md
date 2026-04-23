@@ -1,11 +1,12 @@
 # vidgen Agent 系统架构与功能说明
 
-本文档基于 2026-04-20（CST, UTC+8）对当前 `vidgen` 代码的实际梳理编写，聚焦说明系统整体架构、Agent 编排、核心模块、主要流程和当前功能范围，仅描述代码中已经体现出来的能力。
+本文档基于 2026-04-23（CST, UTC+8）对当前 `vidgen` 代码的实际梳理编写，聚焦说明系统整体架构、Agent 编排、核心模块、主要流程和当前功能范围，仅描述代码中已经体现出来的能力。
 
 ## 0. 文档版本与变更时间（精确到小时）
 
-- 最后全量同步时间：`2026-04-20 CST`（UTC+8）。
+- 最后全量同步时间：`2026-04-23 CST`（UTC+8）。
 - 时间口径说明：以下时间是”文档与代码对齐确认时间”，不是每一处代码首次提交时间。
+- `2026-04-23`：前端仪表盘新增独立 `API Keys` 页签。普通用户可在“我的密钥”视图自助创建、查看和停用外部调用 API Key；管理员可在“客户密钥”视图按用户筛选、为指定客户创建 key 并查看其最后使用时间。完整 `vg_...` key 仅在创建成功当下展示一次，列表页仍只保留前缀、状态、scope 和最后使用时间，不改变后端“明文 key 不入库”的安全语义。
 - `2026-04-20`：新增外部视频生成 API v1。登录用户可创建 `vg_` 前缀 API Key，外部客户通过 `Authorization: Bearer vg_...` 调用 `/v1/video-jobs`，一次性上传多张图片素材和生成 `spec`；后端自动创建私有项目、入库素材、创建 `PipelineRun` 并复用现有执行器。外部任务默认强制进入审核态：普通生成等待 `shot_plan` 审核，复刻生成等待 `replication_plan` 审核；确认后继续生成，最终视频只通过 `/v1/video-jobs/{job_id}/result` 下载，不暴露本地绝对路径。
 - `2026-04-20`：补齐 P0 安全与一致性改进。上传入口新增统一 `upload_validation` 服务，参考视频、素材图片、Talking Head 图片 / 音频、时间线资产会校验扩展名、声明 MIME、文件头和大小限制；`PipelineCreateRequest` 对平台、时长、模型、转场、BGM、音量等字段增加 Pydantic 约束；抖音账号状态约束新增 `reauthorization_required` 并处理 SQLite naive datetime；抖音连接入口会在发起扫码 OAuth 前校验 Client Key / Client Secret 和 HTTPS 回调地址，配置错误返回 503 可读诊断；自动会话摘要补齐 `waiting_prompt_review` 中文状态；`USE_MOCK_LLM`、`USE_MOCK_GENERATOR`、`USE_MOCK_VIDEO_EDITOR` 已进入服务装配逻辑。
 - `2026-04-19`：面向项目经理更新项目说明口径；补齐“产品能力 + 底层实现原理 + 当前能力边界”的阅读路径。同步当前默认配置：`PIPELINE_ENGINE=langgraph`、`HUMAN_IN_LOOP_PROMPT_REVIEW=true`、`QA_REVIEW_ENABLED=true`、`MEM0_ENABLED=true`。修正 Prompt 审核、QA 接入、AgentMemory 数据模型、Mem0 语义记忆、手动模式视频分析真实状态等描述，明确自动模式视频分析 skill 已通过 Qwen 多模态 `video_paths` 实现，传统 `/api/projects/{project_id}/analyze` 的 `Qwen3VLAnalyzer` 真实实现仍待接入。
@@ -178,6 +179,10 @@ vidgen 采用前后端分离架构，核心技术栈如下：
 - 预设角色模板导入
 - 模板学习记录查看
 - 管理员账号启用 / 禁用
+- 独立 `API Keys` 页签：
+  - 普通用户可创建、查看和停用自己的外部调用 key
+  - 管理员可切到“客户密钥”视图，为指定用户创建和管理 key
+  - 创建成功后会在前端一次性展示完整 `vg_...` key，离开提示后列表只保留前缀与元数据
 
 ### 3.6 UI 基础组件
 
@@ -196,7 +201,7 @@ Router 层负责暴露业务 API，当前主要包含以下路由模块：
 - `auth`
   用户注册、登录、登出、获取当前账号信息、管理员账号管理。
 - `api_keys`
-  当前登录用户创建、查看和禁用外部调用 API Key；管理员可查看全量 key、为指定用户创建 key 并禁用任意 key；明文 key 仅在创建时返回。
+  当前登录用户创建、查看和禁用外部调用 API Key；管理员可查看全量 key、为指定用户创建 key 并禁用任意 key；前端仪表盘已接入独立管理界面，明文 key 仍仅在创建时返回一次。
 - `background_templates`
   背景模板增删改查、学习记录读取、预设模板导入，以及基于关键词的角色背景信息自动生成。
 
