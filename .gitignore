@@ -19,6 +19,6 @@ backend/data/
 backend/app/data/
 
 data/
-materials/
-examples/
+/materials/
+/examples/
 frontend/.vite/
