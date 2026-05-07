@@ -220,13 +220,16 @@ vidgen/
 │   │   ├── routers/
 │   │   ├── schemas/
 │   │   └── services/
-│   └── requirements.txt
+│   ├── pyproject.toml
+│   ├── requirements.txt
+│   └── requirements-dev.txt
 ├── frontend/
 │   ├── src/
 │   │   ├── api/
 │   │   ├── components/
 │   │   ├── stores/
 │   │   └── types/
+├── scripts/
 ├── docs/
 │   ├── architecture/
 │   ├── api/
@@ -270,12 +273,19 @@ docker compose up --build
 cd backend
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 uvicorn app.main:app --reload
 ```
 
 后端会从项目根目录的 `.env` 读取环境变量。
 如果你希望在手动启动模式下启用 Mem0 语义记忆和 RAG 检索，建议另外先启动一个本地 Qdrant；如果没有 Qdrant，系统会记录 warning 并自动退回无向量检索模式，不影响主流程。
+
+也可以使用根目录脚本：
+
+- `./scripts/backend-install-dev.sh`：安装后端开发依赖
+- `./scripts/backend-dev.sh`：启动后端开发服务
+- `./scripts/backend-test.sh`：运行后端测试
+- `./scripts/backend-lint.sh`：运行后端 lint
 
 ### 2. 启动前端
 

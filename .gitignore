@@ -11,13 +11,22 @@ __pycache__/
 .vite/
 
 backend/venv/
+backend/.venv/
 backend/.pytest_cache/
 backend/.mypy_cache/
+backend/.ruff_cache/
 backend/.coverage
 backend/coverage.xml
+backend/htmlcov/
 backend/data/
 backend/app/data/
 
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 data/
 /materials/
 /examples/

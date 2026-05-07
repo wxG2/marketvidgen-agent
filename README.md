@@ -121,13 +121,16 @@ vidgen/
 │   │   ├── routers/
 │   │   ├── schemas/
 │   │   └── services/
-│   └── requirements.txt
+│   ├── pyproject.toml
+│   ├── requirements.txt
+│   └── requirements-dev.txt
 ├── frontend/
 │   ├── src/
 │   │   ├── api/
 │   │   ├── components/
 │   │   ├── stores/
 │   │   └── types/
+├── scripts/
 └── README.md
 ```
 
@@ -139,11 +142,18 @@ vidgen/
 cd backend
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 uvicorn app.main:app --reload
 ```
 
 The backend reads environment variables from the project root `.env`.
+
+Useful backend shortcuts:
+
+- `./scripts/backend-install-dev.sh`
+- `./scripts/backend-dev.sh`
+- `./scripts/backend-test.sh`
+- `./scripts/backend-lint.sh`
 
 ### 2. Frontend
 
