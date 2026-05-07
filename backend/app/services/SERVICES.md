@@ -33,7 +33,7 @@ LLM 调用的统一抽象层。
 视频内容 AI 分析服务，用于解析参考视频的场景和风格。
 
 - `VideoAnalyzer`（ABC）：定义 `analyze(video_path, categories) -> AnalysisResult` 接口
-- `Qwen3VLAnalyzer`：调用 Qwen3-VL 多模态模型进行视频理解，输出摘要、场景标签和推荐分类
+- `Qwen3VLAnalyzer`：传统手动分析路由的真实实现占位。当前 Mock 可用，真实 Qwen3-VL 调用尚未接入；自动模式的视频分析走 runtime skill + `LLMService.generate_text(..., video_paths=[...])`
 - `MockVideoAnalyzer`：返回预设分析结果
 
 ---
@@ -66,7 +66,7 @@ AI 视频生成服务，对接外部图生视频 API。
 图像合成服务，用于数字人口播中将人物照片与背景素材合并。
 
 - `ImageCompositor`（ABC）：定义 `composite(model_image, background) -> CompositeTask` 接口
-- `FluxInpaintCompositor`：调用 Flux Inpaint 模型，将人物自然融合到背景中
+- `FluxInpaintCompositor`：Flux Inpaint 真实实现占位。当前 Mock 可用，真实调用尚未接入
 - `MockImageCompositor`：直接返回人物照片作为合成结果
 
 ### `lipsync_generator.py`
@@ -74,7 +74,7 @@ AI 视频生成服务，对接外部图生视频 API。
 对口型视频生成服务，用于数字人口播中驱动人物嘴型与音频同步。
 
 - `LipSyncGenerator`（ABC）：定义 `submit`、`poll` 接口
-- `LTX23LipSyncGenerator`：调用 LTX-2.3 对口型模型，输入合成图+音频片段，输出口播视频
+- `LTX23LipSyncGenerator`：LTX-2.3 对口型模型的真实实现占位。当前 Mock 可用，真实调用尚未接入
 - `MockLipSyncGenerator`：返回预设视频文件
 
 ### `keyframe_extractor.py`
@@ -171,7 +171,7 @@ Pipeline Agent 中间产物入仓服务，被 `BaseAgent.run(...)` 在 `prompt_e
 
 ### `usage_service.py`
 
-`UsageRecorder` 类：记录 Agent 调用 LLM 产生的 token 用量到 `model_usages` 表（旧版实现）。新版由 `agent_state.py` 中的 `ModelCall` 模型替代，提供更细粒度的单次调用记录。
+`UsageRecorder` 类：当前主链路使用的 token 用量记录器，写入 `model_usages` 表并供 Analytics API 聚合。`agent_state.py` 中的 `ModelCall` 是更细粒度审计模型，目前尚未成为主流程事实来源。
 
 ---
 

@@ -67,7 +67,7 @@ vidgen 采用前后端分离架构，核心技术栈如下：
 - 文件存储：本地文件系统
 - 编排方式：`多 Agent 流水线`，支持两种执行引擎（`Pipeline`、`LangGraph`）
 - 多媒体处理：`FFmpeg`
-- 外部模型服务：`Qwen（QWEN_OMNI_MODEL，当前默认 qwen3-omni-flash）`、`Qwen3 TTS`、`Seedance 1.5 Pro / 2.0`、`Kling v3`、`Flux Inpaint`、`LTX2.3` 等；自动模式参考视频分析通过 Qwen 多模态 `video_paths` 调用实现，传统手动分析路由中的 `Qwen3VLAnalyzer` 真实集成仍待接入
+- 外部模型服务：`Qwen（QWEN_OMNI_MODEL，当前默认 qwen3-omni-flash）`、`Qwen3 TTS`、`Seedance 1.5 Pro / 2.0`、`Kling v3` 等；自动模式参考视频分析通过 Qwen 多模态 `video_paths` 调用实现，传统手动分析路由中的 `Qwen3VLAnalyzer` 真实集成仍待接入，Flux Inpaint 与 LTX2.3 目前保留真实实现占位并以 Mock 为主
 
 可以把系统拆成 6 层：
 
@@ -325,9 +325,9 @@ Service 层封装具体能力，当前主要包括：
 - `MaterialService`
   负责素材扫描、索引、分类管理、缩略图生成和删除。
 - `ImageCompositor`
-  负责图像合成能力，支持 Mock 和 Flux Inpaint 实现。
+  负责图像合成能力；当前 Mock 可用，Flux Inpaint 真实实现仍是占位。
 - `LipSyncGenerator`
-  负责口型驱动能力，支持 Mock 和 LTX2.3 实现。
+  负责口型驱动能力；当前 Mock 可用，LTX2.3 真实实现仍是占位。
 - `UsageRecorder`
   负责记录模型请求和 token 用量。
 - `MediaUtils`
@@ -512,12 +512,12 @@ Prompt 层集中管理系统提示词，包括：
 
 ### 6.6 Talking Head 工作流
 
-Talking Head 是一个四步特殊流程：
+Talking Head 是一个四步特殊流程设计，目前前后端流程与 Mock 能力可用于演示，真实 Flux Inpaint / LTX2.3 调用仍是预留：
 
 1. 上传模型人物图片
-2. 将人物图与背景图进行合成（Flux Inpaint）
+2. 将人物图与背景图进行合成（Flux Inpaint 预留，当前真实调用未接入）
 3. 选择音频段和设置运动提示词
-4. 生成口型驱动视频（LTX2.3）
+4. 生成口型驱动视频（LTX2.3 预留，当前真实调用未接入）
 
 ### 6.7 时间轴剪辑
 
@@ -565,9 +565,9 @@ Talking Head 是一个四步特殊流程：
 - `Kling v3`
   作为另一套图生视频服务接入。
 - `Flux Inpaint`
-  用于 Talking Head 中的图像合成。
+  预留用于 Talking Head 中的图像合成；当前真实调用尚未接入。
 - `LTX2.3`
-  用于 Talking Head 中的口型驱动。
+  预留用于 Talking Head 中的口型驱动；当前真实调用尚未接入。
 
 系统通过 `USE_MOCK_*` 系列配置项决定启用真实服务还是 Mock 服务，因此同一套架构可以在开发态和真实服务态之间切换。
 

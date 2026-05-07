@@ -1,6 +1,8 @@
 # VidGen
 
-[中文说明](./README.zh-CN.md)
+[中文说明](./README-zh-CN.md)
+
+Documentation map: [docs/README-zh-CN.md](./docs/README-zh-CN.md)
 
 VidGen is an AI-assisted short-video production workspace with two workflows:
 

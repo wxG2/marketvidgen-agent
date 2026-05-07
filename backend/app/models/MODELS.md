@@ -92,7 +92,7 @@
 
 ## Agent 框架（LangGraph）
 
-`agent_state.py` 存储 LangGraph Agent 运行时的完整状态，是 `pipeline.py` 中旧版 Agent 执行记录的替代和升级。
+`agent_state.py` 定义了一套更细粒度的 Agent 审计与状态模型，目前主要是预留/扩展模型。当前主流程事实来源仍是 `pipeline_runs`、`agent_executions` 和 `model_usages`；下表中的 `AgentRun`、`ToolCall`、`ModelCall`、`RunEvent`、`RetrievalDocument` 等尚未全面接入主链路。
 
 | 类 | 表名 | 说明 |
 |---|---|---|
@@ -105,7 +105,7 @@
 | `PromptVersion` | `prompt_versions` | 系统 prompt 的版本管理，每个 prompt 名称可以有多个版本，供 `ModelCall` 关联追踪 |
 | `ModelCall` | `model_calls` | 每次调用 LLM 的详细记录，包括模型名、token 用量、延迟、完整请求和响应 JSON |
 | `RunEvent` | `run_events` | 运行过程中产生的事件流水，供前端实时推送和日志审计使用 |
-| `RetrievalDocument` | `retrieval_documents` | 向量检索文档索引，记录各业务表数据的向量化状态（embedding 版本、向量 ID 等），支持 RAG 检索 |
+| `RetrievalDocument` | `retrieval_documents` | 预留的向量检索文档索引元数据表，记录各业务表数据的向量化状态（embedding 版本、向量 ID 等）；当前 RAG 主链路直接通过 `RagService` 使用 Qdrant |
 
 ### `agent_memory.py`
 
@@ -172,7 +172,7 @@
 
 | 类 | 表名 | 说明 |
 |---|---|---|
-| `ModelUsage` | `model_usages` | LLM Token 用量统计（旧版），按 `pipeline_run_id` + `agent_name` 汇总用量。新版已由 `agent_state.py` 中的 `ModelCall` 替代，提供更细粒度的单次调用追踪 |
+| `ModelUsage` | `model_usages` | 当前主链路使用的 LLM Token 用量统计，按 `pipeline_run_id` + `agent_name` 汇总用量，并由 Analytics API 聚合展示 |
 
 ---
 

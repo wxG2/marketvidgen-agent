@@ -1,4 +1,6 @@
-# Agent 系统模块成熟度评估报告
+# Agent 系统模块成熟度评估报告（历史审计）
+
+> 状态说明：本文是某一阶段的审计快照，部分问题已经被后续实现修复，部分评分和结论不再代表当前状态。当前项目事实请以根目录 `README-zh-CN.md`、代码和测试为准；本文仅作为历史审计归档参考。
 
 ## 1. 评估概览
 
@@ -607,7 +609,7 @@
 
 ### 本次验证记录
 
-- 读取范围：`README.md`、`README.zh-CN.md`、`backend/app/README.md`、`backend/app/agents/README.md`、`backend/app/agents/skills/README.md`、`SYSTEM_COMPARISON.zh-CN.md`、`Developer/*` 关键规范、`backend/app` 关键实现、`frontend/src/components/pipeline/AutoModeStudio.vue`、`backend/tests` 相关测试。
+- 读取范围：`README.md`、`README-zh-CN.md`、`backend/app/README.md`、`backend/app/agents/README.md`、`backend/app/agents/skills/README.md`、`docs/architecture/SYSTEM_COMPARISON.zh-CN.md`、`docs/development/*` 关键规范、`backend/app` 关键实现、`frontend/src/components/pipeline/AutoModeStudio.vue`、`backend/tests` 相关测试。
 - 命令：`python3 -m pytest backend/tests/test_runtime_skill_loader.py backend/tests/test_chat_agent_streaming.py -q`
   结果：`6 passed`，有 Pydantic v2 `Config` deprecation warning 和 SQLite 外键循环 warning。
 - 命令：`python3 -m pytest backend/tests/test_orchestrator_replication_prompt.py -q`

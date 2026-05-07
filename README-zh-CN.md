@@ -2,12 +2,14 @@
 
 [English](./README.md)
 
+[文档导航](./docs/README-zh-CN.md)
+
 capy 是一个面向短视频生产的 AI 工作台，目前提供两种工作流：
 
 - `一键生成`：通过对话式界面，直接用脚本和图片素材生成视频
 - `手动模式`：按上传、分析、选素材、写提示词、生成、剪辑的步骤逐步完成
 
-当前项目采用 Vue + Vite 前端和 FastAPI 后端。后端通过多 agent 流水线完成规划、复刻方案拆解、提示词设计、音频字幕生成、分镜视频生成、最终剪辑和质量审核；同时已经补齐 MCP Server、基于 Qdrant 的 RAG 检索增强、Analytics API、结构化日志以及 Docker / CI 基础工程化。
+当前项目采用 Vue + Vite 前端和 FastAPI 后端。后端通过多 agent 流水线完成规划、复刻方案拆解、提示词设计、音频字幕生成、分镜视频生成、最终剪辑和质量审核；同时已经补齐 MCP Server、基于 Qdrant 的历史方案检索增强、Analytics API、结构化日志以及 Docker / CI 基础工程化。
 
 ## 给项目经理的快速导览
 
@@ -32,8 +34,8 @@ vidgen 不是单点的视频模型调用 Demo，而是一套围绕“项目、�
 - 个人中心角色背景模板库，支持预设角色模板、关键词自动生成人设草稿和任务后增量学习
 - 手动模式，适合希望逐步控制每个环节的创作者
 - 当前 Vue 自动模式界面默认视频生成模型为 `Seedance 1.5 Pro`，可在 `Seedance 1.5 Pro` / `Seedance 2.0` / `Kling v3` / `mock` 间选择
-- MCP Server：通过 stdio 暴露 `list_materials`、`get_pipeline_status`、`search_project_history`、`list_agent_tools` 4 个工具，并提供 `GET /mcp/tools` 发现端点
-- RAG 检索增强：Orchestrator 在生成方案前可检索历史相似项目作为 prompt 上下文；Qdrant 或 embedding 服务不可用时自动降级为空结果，不阻断主流程
+- MCP Server：通过 stdio 暴露 `list_materials`、`get_pipeline_status`、`search_project_history`、`list_agent_tools` 4 个工具，并提供 `GET /mcp/tools` 发现端点；其中 `search_project_history` 是基于数据库关键词的历史项目查询，不是向量检索
+- 历史方案检索增强：Orchestrator 在生成方案前可通过 `RagService` 检索历史相似方案并注入 prompt 上下文；Qdrant 或 embedding 服务不可用时自动降级为空结果，不阻断主流程
 - Analytics API：提供总览、各 Agent 成功率 / 耗时、QA 通过率、Token 消耗明细、Pipeline 趋势 5 个观测端点
 - 结构化日志：支持 `LOG_FORMAT=text|json`，每个请求自动注入 `X-Request-ID`，方便排查长任务问题
 - Docker / CI：已提供 backend / frontend / Qdrant 的 `docker-compose.yml`，并有 GitHub Actions 执行 lint、pytest、前端 build 和 Docker image build
@@ -77,7 +79,7 @@ vidgen 不是单点的视频模型调用 Demo，而是一套围绕“项目、�
 - MCP 与开放工具发现：
   当前已提供 stdio MCP Server，可暴露 `list_materials`、`get_pipeline_status`、`search_project_history`、`list_agent_tools` 4 个工具；同时也提供 `GET /mcp/tools` 作为 HTTP 发现端点，方便调试和非 MCP 客户端查看 tool schema。
 - 历史项目检索增强：
-  当前 `RagService` 已实现基于 Qdrant + Qwen `text-embedding-v3` 的 index / retrieve / prompt formatting 能力；`OrchestratorAgent` 在普通生成前会尝试检索相似历史方案作为 few-shot context。若未配置 `QWEN_API_KEY`、Qdrant 不可达或初始化失败，系统会自动退回无检索模式。
+  当前 `RagService` 已实现基于 Qdrant + Qwen `text-embedding-v3` 的 retrieve / prompt formatting 能力，并保留 `index_pipeline_run(...)` 写入接口；`OrchestratorAgent` 在普通生成前会尝试检索相似历史方案作为 few-shot context。当前主流程尚未在 pipeline 完成后自动写入历史方案索引，若未配置 `QWEN_API_KEY`、Qdrant 不可达或初始化失败，系统会自动退回无检索模式。
 - Agent 可观测性 API：
   当前已提供 `/api/analytics/overview`、`/api/analytics/agents`、`/api/analytics/qa`、`/api/analytics/token-usage`、`/api/analytics/pipeline-trends`，用于查看运行数、成功率、Agent 耗时、QA 结果和模型 Token 消耗。
 - 容器化与基础 CI：
@@ -117,6 +119,7 @@ vidgen 不是单点的视频模型调用 Demo，而是一套围绕“项目、�
 - [backend/app/services/qwen_client.py](./backend/app/services/qwen_client.py)
 - [backend/app/mcp/server.py](./backend/app/mcp/server.py)
 - [backend/app/routers/analytics.py](./backend/app/routers/analytics.py)
+- [docs/README-zh-CN.md](./docs/README-zh-CN.md)
 
 ## Agent 流水线
 
@@ -224,8 +227,16 @@ vidgen/
 │   │   ├── components/
 │   │   ├── stores/
 │   │   └── types/
+├── docs/
+│   ├── architecture/
+│   ├── api/
+│   ├── plans/
+│   ├── reports/
+│   ├── portfolio/
+│   ├── archive/
+│   └── development/
 ├── README.md
-└── README.zh-CN.md
+└── README-zh-CN.md
 ```
 
 ## 本地启动
@@ -309,7 +320,7 @@ curl -X POST http://localhost:8000/v1/video-jobs \
 
 更完整的发放和第三方接入说明见：
 
-- [THIRD_PARTY_API_INTEGRATION.zh-CN.md](./THIRD_PARTY_API_INTEGRATION.zh-CN.md)
+- [THIRD_PARTY_API_INTEGRATION.zh-CN.md](./docs/api/THIRD_PARTY_API_INTEGRATION.zh-CN.md)
 
 ## 环境变量
 
@@ -448,7 +459,7 @@ cd frontend && npm run build
 - 抖音接口提交成功只表示 vidgen 已经把内容提交到开放平台，视频仍可能进入平台审核或仅自己可见阶段。
 - 当前仓库更偏向本地开发与功能验证，尚未针对生产部署做完整加固。
 - `PipelineCreateRequest` 已对平台、时长、生成模型、转场、BGM、音量等字段做 Pydantic 约束；不合法请求会在进入 Agent 流水线前返回 422。
-- RAG 历史检索与 Mem0 默认依赖 Qdrant；若你只做基础演示，可以不启动 Qdrant，系统会自动降级为无语义检索模式。
+- RAG 历史检索与 Mem0 默认依赖 Qdrant；若你只做基础演示，可以不启动 Qdrant，系统会自动降级为无语义检索模式。当前 RAG 检索注入已接入 Orchestrator，pipeline 完成后的自动索引写入仍需补齐。
 - `GET /mcp/tools` 和 `/api/analytics/*` 都已经注册在主应用中，可直接用于演示开放能力和 Agent 可观测性。
 - 若要在生产或容器环境中收集日志，建议把 `LOG_FORMAT` 设为 `json`，便于接入日志平台。
 

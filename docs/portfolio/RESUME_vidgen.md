@@ -12,7 +12,7 @@
 - 设计并实现端到端 AI 短视频生产工作台，覆盖素材管理、需求解析、分镜规划、多模态提示词工程、TTS 配音、图生视频、FFmpeg 合成、QA 审核与抖音草稿发布，支持一键自动化与人工逐步审核两种生产模式
 - 构建基于 LangGraph `StateGraph` 的多 Agent 编排系统，包含 Orchestrator、Prompt Engineer、Audio Subtitle、Video Generator、Video Editor、QA Reviewer 等专项 Agent，支持条件路由、QA 失败回退重试、节点级 Checkpoint 和 Human-in-the-Loop 暂停/恢复
 - 实现 MCP Server 能力，将内部 `ToolRegistry` 与业务能力通过 FastMCP 暴露为 4 个工具：素材检索、Pipeline 状态查询、历史项目检索、Agent 工具发现；同时提供 `GET /mcp/tools` HTTP 发现端点，可被 Claude Desktop 等 MCP 客户端接入
-- 实现 RAG 增强生成链路：基于 Qdrant + Qwen `text-embedding-v3` 提供历史生成方案索引/检索能力，Orchestrator 调用 LLM 前检索相似项目并注入 few-shot context；Qdrant 或 embedding 服务不可用时自动降级为空结果，不阻断主流程
+- 实现 RAG 检索增强链路：基于 Qdrant + Qwen `text-embedding-v3` 提供历史生成方案相似检索与 prompt 注入能力，Orchestrator 调用 LLM 前检索相似项目并注入 few-shot context；Qdrant 或 embedding 服务不可用时自动降级为空结果，不阻断主流程
 - 建立 Agent 可观测性体系：结构化日志支持 `LOG_FORMAT=text|json`，请求级 `X-Request-ID` / `trace_id` 贯穿，Analytics API 聚合运行数、成功率、各 Agent 耗时、QA 打回率、Token 消耗与日维度趋势
 - 完成工程化交付：Docker 多阶段构建、`docker-compose` 编排 backend / frontend / Qdrant、GitHub Actions 执行 ruff lint + pytest + Docker build；新增覆盖 ToolRegistry、Analytics、RAG、MCP、BaseAgent 的 50+ 测试用例
 
@@ -42,7 +42,7 @@ VidGen 的目标是把上述环节抽象成一条可观测、可中断恢复、�
 | 可观测性 | structlog · request_id / trace_id · Analytics API · UsageRecorder |
 | 工程化 | Docker · docker-compose · GitHub Actions · ruff · pytest |
 | 多媒体处理 | FFmpeg · Pillow |
-| 外部模型 | Qwen Omni（LLM/视觉）· Qwen3 TTS · Qwen3-VL · Seedance 1.5 Pro · Kling v3 · Flux Inpaint · LTX2.3 |
+| 外部模型 | Qwen Omni（LLM/视觉）· Qwen3 TTS · Seedance 1.5 Pro · Kling v3 · Mock/Real provider 装配 |
 | 第三方平台 | 抖音 Open API（OAuth 2.0 + 视频发布） |
 
 ---
@@ -75,10 +75,10 @@ VidGen 的目标是把上述环节抽象成一条可观测、可中断恢复、�
 
 #### 3. RAG 检索增强
 
-- 基于 Qdrant + Qwen `text-embedding-v3` 实现历史生成方案索引与相似检索，支持将 completed pipeline 的需求、平台、风格、方案摘要和评分写入向量库
+- 基于 Qdrant + Qwen `text-embedding-v3` 实现历史生成方案相似检索，并保留 completed pipeline 方案写入向量库的服务接口
 - Orchestrator 在调用 LLM 生成方案前，按当前创意需求和平台检索相似历史项目，将结果格式化为 few-shot context 注入 prompt
 - `AgentContext` 增加 `rag_service` 扩展字段，pipeline 启动时从应用状态注入；服务启动阶段自动初始化 Qdrant collection
-- 检索、索引、collection 初始化均做 graceful degradation，Qdrant 或 embedding API 离线时返回空结果或 false，不影响主视频生成链路
+- 检索、写入接口和 collection 初始化均做 graceful degradation，Qdrant 或 embedding API 离线时返回空结果或 false，不影响主视频生成链路
 
 #### 4. Agent 可观测性与 Analytics API
 
@@ -90,7 +90,7 @@ VidGen 的目标是把上述环节抽象成一条可观测、可中断恢复、�
 
 #### 5. 视频复刻与 Human-in-the-Loop
 
-- 实现从“参考视频”到“同款生成方案”的完整链路：优先直传完整视频给 Qwen3-VL 做全局理解，失败时回退到关键帧模式
+- 实现从“参考视频”到“同款生成方案”的完整链路：优先通过 Qwen 多模态接口直传完整视频做全局理解，失败时回退到关键帧模式
 - 生成镜头级复刻方案后进入 `waiting_confirmation` 状态，前端展示方案供用户确认、调整或终止
 - PromptEngineer 支持可选提示词审核暂停，用户可修改镜头 prompt 后继续执行
 - 两类人工介入点均支持“确认继续 / 提交修改意见重跑 / 直接终止”三态，保留已生成内容，适配真实生产中的可控 Agent 需求
