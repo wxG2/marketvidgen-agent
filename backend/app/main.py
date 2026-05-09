@@ -16,9 +16,9 @@ from app.bootstrap import (
     shutdown_application,
     startup_application,
 )
-from app.config import settings
-from app.http import configure_exception_handlers, configure_middleware
-from app.logging_config import configure_logging
+from app.core.config import settings
+from app.core.http import configure_exception_handlers, configure_middleware
+from app.core.logging import configure_logging
 from app.mcp.router import mcp_router
 from app.routers.analytics import router as analytics_router
 from app.routers import api_keys, examples, materials, projects, timeline, upload

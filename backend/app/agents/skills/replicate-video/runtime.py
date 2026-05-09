@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from app.config import settings
+from app.core.config import settings
 from app.models.auto_chat import AutoChatSession
 from app.models.pipeline import PipelineRun
 from app.routers.pipeline import _run_pipeline

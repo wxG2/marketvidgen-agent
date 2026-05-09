@@ -7,7 +7,7 @@ from typing import Any, Optional
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.config import settings
+from app.core.config import settings
 from app.models.pipeline import AgentExecution
 from app.models.pipeline import PipelineRun
 from app.models.usage import ModelUsage

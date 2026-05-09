@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.prompts import VIDEO_EDITOR_SYSTEM_PROMPT
+from app.services.video_editing.helpers import (
+    _XFADE_MAP,
+    _concat_with_xfade,
+    _find_bgm,
+    _parse_srt,
+    _parse_srt_timed,
+    _probe_duration,
+    _render_subtitle_overlays,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -79,7 +86,6 @@ class RealVideoEditorService(VideoEditorService):
         if not isinstance(context_data, dict):
             logger.warning("video_editor received non-dict context_data (%s), fallback to empty context", type(context_data).__name__)
             context_data = {}
-        shot_prompts = context_data.get("shot_prompts", [])
         duration_mode = context_data.get("duration_mode", "fixed")
         shot_durations = context_data.get("shot_durations", [])
         transition_type = context_data.get("transition", "none")
@@ -87,11 +93,7 @@ class RealVideoEditorService(VideoEditorService):
         bgm_mood = context_data.get("bgm_mood", "none")
         bgm_volume = float(context_data.get("bgm_volume", 0.15))
         watermark_path = context_data.get("watermark_path")
-        target_duration_s = (
-            sum(float(d) for d in shot_durations)
-            if duration_mode == "fixed" and shot_durations
-            else None
-        )
+        target_duration_s = sum(float(d) for d in shot_durations) if shot_durations else None
         video_model_no_audio = context_data.get("video_model_no_audio", True)
         # Preserve model-generated audio only when explicitly enabled AND no TTS voiceover.
         # TTS always wins; xfade transitions strip audio (complex audio chaining not supported).
@@ -99,61 +101,14 @@ class RealVideoEditorService(VideoEditorService):
         preserve_model_audio = not video_model_no_audio and not has_tts_audio
 
         subtitle_segments = _parse_srt(subtitle_path)
-
-        schema = {
-            "name": "edit_plan",
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "ordered_indices": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                    }
-                },
-                "required": ["ordered_indices"], # 返回视频剪辑的最终顺序
-            },
-        }
         video_clips_data = context_data.get("video_clips_data", [])
-        clip_context = []
-        for idx, clip in enumerate(video_clips_data):
-            clip_item = clip if isinstance(clip, dict) else {}
-            prompt_raw = shot_prompts[idx] if idx < len(shot_prompts) else {}
-            prompt = prompt_raw if isinstance(prompt_raw, dict) else {}
-            clip_context.append(
-                {
-                    "shot_idx": clip_item.get("shot_idx", idx),
-                    "prompt": prompt.get("video_prompt", ""),
-                    "script_segment": prompt.get("script_segment", ""),
-                    "subtitle_text": subtitle_segments[idx]["text"] if idx < len(subtitle_segments) else "",
-                }
-            )
-        if not clip_context:
-            clip_context = [{"shot_idx": idx, "prompt": "", "script_segment": "", "subtitle_text": ""} for idx in range(len(video_clips))]
 
-        # Skip LLM ordering when there are no subtitles (no-audio scenario) —
-        # the shot order from the director is canonical and LLM can't add value.
-        has_subtitles = bool(subtitle_segments)
-        if has_subtitles:
-            try:
-                plan, usage = await self.llm.generate_structured(
-                    system_prompt=VIDEO_EDITOR_SYSTEM_PROMPT,
-                    user_prompt=str({"clips": clip_context, "subtitle_segments": subtitle_segments}),
-                    schema=schema,
-                )
-                ordered_indices = _extract_ordered_indices(plan, len(video_clips))
-                if sorted(ordered_indices) != list(range(len(video_clips))):
-                    logger.warning("video_editor got invalid ordered_indices=%s, fallback to default order", ordered_indices)
-                    ordered_indices = list(range(len(video_clips)))
-            except Exception as exc:
-                logger.warning("video_editor LLM ordering failed (%s), using default order", exc)
-                ordered_indices = list(range(len(video_clips)))
-                usage = {}
-        else:
-            ordered_indices = list(range(len(video_clips)))
-            usage = {}
+        # Shot order from the director plan is canonical. The video generator
+        # already emits clips in shot_idx order, so the editor must not reorder.
+        ordered_indices = list(range(len(video_clips)))
+        usage = {}
 
-        # Build a per-clip-index duration map so trimming is correct even
-        # if ordered_indices reorders the clips.
+        # Build a per-clip-index duration map from the director plan.
         clips_duration_map: dict[int, float] = {}
         for ci, clip in enumerate(video_clips_data):
             clip_item = clip if isinstance(clip, dict) else {}
@@ -172,17 +127,13 @@ class RealVideoEditorService(VideoEditorService):
                 local_clip = await ensure_local_file(video_clips[clip_idx], workdir=temp_dir)
                 clip_out = os.path.join(temp_dir, f"clip_{output_idx:03d}.mp4")
                 duration = None
-                if duration_mode == "auto":
-                    if output_idx < len(subtitle_segments):
-                        duration = max(subtitle_segments[output_idx]["duration_s"], 1.0)
-                else:
-                    # Use per-clip duration from clips_duration_map (keyed by original clip_idx)
-                    # so trimming is correct even when LLM reorders clips.
-                    clip_dur = clips_duration_map.get(clip_idx)
-                    if clip_dur is not None:
-                        duration = max(clip_dur, 1.0)
-                    elif output_idx < len(subtitle_segments):
-                        duration = max(subtitle_segments[output_idx]["duration_s"], 1.0)
+                # Use per-clip duration from the director plan first, even in auto mode.
+                # The plan duration is the final-cut authority; subtitles are only a fallback.
+                clip_dur = clips_duration_map.get(clip_idx)
+                if clip_dur is not None:
+                    duration = max(clip_dur, 1.0)
+                elif output_idx < len(subtitle_segments):
+                    duration = max(subtitle_segments[output_idx]["duration_s"], 1.0)
                 ffmpeg_args = [self.ffmpeg_bin, "-y", "-i", local_clip]
                 if duration:
                     ffmpeg_args.extend(["-t", f"{duration:.2f}"])
@@ -452,306 +403,3 @@ class RealVideoEditorService(VideoEditorService):
                     os.remove(path)
                 except OSError:
                     pass
-
-
-def _extract_ordered_indices(plan: object, clip_count: int) -> list[int]:
-    """Robustly parse ordered_indices from LLM output.
-
-    The schema expects {"ordered_indices": [...]}, but some models may still
-    return a bare list in edge cases. We normalize both forms.
-    """
-    default = list(range(clip_count))
-    candidate: object = None
-
-    if isinstance(plan, dict):
-        candidate = plan.get("ordered_indices")
-    elif isinstance(plan, list):
-        candidate = plan
-    elif isinstance(plan, str):
-        try:
-            parsed = json.loads(plan)
-        except json.JSONDecodeError:
-            return default
-        return _extract_ordered_indices(parsed, clip_count)
-    else:
-        return default
-
-    if not isinstance(candidate, list):
-        return default
-
-    normalized: list[int] = []
-    for item in candidate:
-        try:
-            normalized.append(int(item))
-        except (TypeError, ValueError):
-            return default
-    return normalized
-
-
-async def _probe_duration(ffmpeg_bin: str, file_path: str, run_subprocess) -> float | None:
-    """Probe media file duration in seconds using ffprobe."""
-    import re as _re
-    rc, stdout, stderr = await run_subprocess(
-        "ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-        "-of", "csv=p=0", file_path,
-    )
-    if rc == 0 and stdout.strip():
-        try:
-            return float(stdout.strip())
-        except ValueError:
-            pass
-    # Fallback: parse from ffmpeg stderr
-    rc, _, stderr = await run_subprocess(ffmpeg_bin, "-i", file_path, "-hide_banner", "-f", "null", "-")
-    match = _re.search(r"Duration:\s*(\d+):(\d+):(\d+)\.(\d+)", stderr)
-    if match:
-        h, m, s, cs = int(match.group(1)), int(match.group(2)), int(match.group(3)), int(match.group(4))
-        return h * 3600 + m * 60 + s + cs / 100.0
-    return None
-
-
-def _parse_srt(subtitle_path: str) -> list[dict]:
-    import re
-
-    if not subtitle_path or not os.path.exists(subtitle_path):
-        return []
-
-    blocks = Path(subtitle_path).read_text(encoding="utf-8").strip().split("\n\n")
-    segments = []
-    for block in blocks:
-        lines = [line.strip() for line in block.splitlines() if line.strip()]
-        if len(lines) < 3:
-            continue
-        time_line = lines[1]
-        text = " ".join(lines[2:])
-        match = re.match(r"(\d\d:\d\d:\d\d,\d\d\d)\s+-->\s+(\d\d:\d\d:\d\d,\d\d\d)", time_line)
-        if not match:
-            continue
-        start_s = _srt_time_to_seconds(match.group(1))
-        end_s = _srt_time_to_seconds(match.group(2))
-        segments.append({"text": text, "duration_s": max(end_s - start_s, 1.0)})
-    return segments
-
-
-def _srt_time_to_seconds(value: str) -> float:
-    hh, mm, rest = value.split(":")
-    ss, ms = rest.split(",")
-    return int(hh) * 3600 + int(mm) * 60 + int(ss) + int(ms) / 1000
-
-
-def _parse_srt_timed(subtitle_path: str) -> list[dict]:
-    """Parse SRT file and return segments with start_s, end_s, text."""
-    import re
-
-    if not subtitle_path or not os.path.exists(subtitle_path):
-        return []
-
-    blocks = Path(subtitle_path).read_text(encoding="utf-8").strip().split("\n\n")
-    segments = []
-    for block in blocks:
-        lines = [line.strip() for line in block.splitlines() if line.strip()]
-        if len(lines) < 3:
-            continue
-        time_line = lines[1]
-        text = " ".join(lines[2:])
-        match = re.match(r"(\d\d:\d\d:\d\d,\d\d\d)\s+-->\s+(\d\d:\d\d:\d\d,\d\d\d)", time_line)
-        if not match:
-            continue
-        start_s = _srt_time_to_seconds(match.group(1))
-        end_s = _srt_time_to_seconds(match.group(2))
-        segments.append({"start_s": start_s, "end_s": end_s, "text": text})
-    return segments
-
-
-def _render_subtitle_overlays(
-    segments: list[dict],
-    width: int,
-    height: int,
-    temp_dir: str,
-    first_overlay_input_idx: int = 2,
-) -> tuple[list[str], str]:
-    """Render each subtitle segment as a transparent PNG and build ffmpeg overlay filter.
-
-    Returns (list_of_png_paths, filter_complex_string).
-    Uses Pillow for text rendering — no libass/freetype dependency in ffmpeg needed.
-    The overlay filter is built-in and always available.
-    """
-    from PIL import Image, ImageDraw, ImageFont
-
-    # Try to find a CJK-capable font
-    font = None
-    font_size = 28
-    font_candidates = [
-        "/System/Library/Fonts/STHeiti Medium.ttc",          # macOS Chinese
-        "/System/Library/Fonts/PingFang.ttc",                # macOS PingFang
-        "/System/Library/Fonts/Hiragino Sans GB.ttc",        # macOS Hiragino
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",  # Linux
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    ]
-    for fp in font_candidates:
-        if os.path.exists(fp):
-            try:
-                font = ImageFont.truetype(fp, font_size)
-                break
-            except Exception:
-                continue
-    if font is None:
-        try:
-            font = ImageFont.truetype("Arial", font_size)
-        except Exception:
-            font = ImageFont.load_default()
-
-    png_paths: list[str] = []
-    for i, seg in enumerate(segments):
-        img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-        text = seg["text"]
-
-        # Measure text
-        bbox = draw.textbbox((0, 0), text, font=font)
-        tw = bbox[2] - bbox[0]
-        th = bbox[3] - bbox[1]
-        x = (width - tw) // 2
-        y = height - th - 40  # 40px from bottom
-
-        # Draw black outline
-        for dx in range(-2, 3):
-            for dy in range(-2, 3):
-                if dx == 0 and dy == 0:
-                    continue
-                draw.text((x + dx, y + dy), text, font=font, fill=(0, 0, 0, 220))
-        # Draw white text
-        draw.text((x, y), text, font=font, fill=(255, 255, 255, 255))
-
-        png_path = os.path.join(temp_dir, f"sub_{i:03d}.png")
-        img.save(png_path)
-        png_paths.append(png_path)
-
-    # Build filter_complex: chain overlays with enable=between(t,start,end).
-    # Inputs: [0:v] = video, optional [1:a] = audio, then subtitle PNGs.
-    parts = []
-    prev = "[0:v]"
-    for i, seg in enumerate(segments):
-        input_idx = i + first_overlay_input_idx
-        out_label = f"[v{i}]" if i < len(segments) - 1 else "[vout]"
-        start = f"{seg['start_s']:.3f}"
-        end = f"{seg['end_s']:.3f}"
-        parts.append(
-            f"{prev}[{input_idx}]overlay=0:0:enable='between(t,{start},{end})'{out_label}"
-        )
-        prev = out_label
-
-    filter_complex = ";".join(parts)
-    return png_paths, filter_complex
-
-
-# ── Transition xfade mapping ──
-_XFADE_MAP: dict[str, str] = {
-    "fade": "fade",
-    "dissolve": "dissolve",
-    "slideright": "slideright",
-    "slideup": "slideup",
-    "wipeleft": "wipeleft",
-    "wiperight": "wiperight",
-}
-
-
-async def _concat_with_xfade(
-    ffmpeg_bin: str,
-    clip_paths: list[str],
-    output_path: str,
-    xfade_name: str,
-    xfade_dur: float,
-    run_subprocess,
-) -> str:
-    """Concatenate clips with xfade transitions between each pair.
-
-    FFmpeg xfade filter: [v0][v1]xfade=transition=fade:duration=0.5:offset=4.5[vx0]
-    where offset = duration_of_clip0 - xfade_dur
-    """
-    import logging as _logging
-    _log = _logging.getLogger(__name__)
-
-    if len(clip_paths) == 1:
-        # Single clip, just copy
-        import shutil
-        shutil.copy2(clip_paths[0], output_path)
-        return output_path
-
-    # Probe each clip's duration
-    durations: list[float] = []
-    for cp in clip_paths:
-        dur = await _probe_duration(ffmpeg_bin, cp, run_subprocess)
-        durations.append(dur or 5.0)
-
-    # Build input args and filter_complex
-    input_args: list[str] = []
-    for cp in clip_paths:
-        input_args.extend(["-i", cp])
-
-    # Chain xfade filters
-    filter_parts: list[str] = []
-    offset = durations[0] - xfade_dur
-    prev_label = "[0:v]"
-    for i in range(1, len(clip_paths)):
-        out_label = f"[vx{i}]" if i < len(clip_paths) - 1 else "[vout]"
-        offset_clamped = max(offset, 0.1)
-        filter_parts.append(
-            f"{prev_label}[{i}:v]xfade=transition={xfade_name}:duration={xfade_dur:.2f}:offset={offset_clamped:.3f}{out_label}"
-        )
-        prev_label = out_label
-        if i < len(clip_paths) - 1:
-            offset = offset_clamped + durations[i] - xfade_dur
-
-    filter_complex = ";".join(filter_parts)
-
-    args = [ffmpeg_bin, "-y"] + input_args + [
-        "-filter_complex", filter_complex,
-        "-map", "[vout]",
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        output_path,
-    ]
-    rc, _, stderr = await run_subprocess(*args)
-    if rc != 0:
-        _log.warning(f"xfade concat failed, falling back to simple concat: {stderr}")
-        # Fallback: simple concat
-        import tempfile
-        concat_file = os.path.join(tempfile.mkdtemp(), "concat.txt")
-        Path(concat_file).write_text(
-            "\n".join(f"file '{Path(p).as_posix()}'" for p in clip_paths),
-            encoding="utf-8",
-        )
-        rc2, _, stderr2 = await run_subprocess(
-            ffmpeg_bin, "-y", "-f", "concat", "-safe", "0",
-            "-i", concat_file, "-c:v", "libx264", "-pix_fmt", "yuv420p",
-            output_path,
-        )
-        if rc2 != 0:
-            raise RuntimeError(f"ffmpeg concat fallback failed: {stderr2}")
-    return output_path
-
-
-def _find_bgm(mood: str) -> str | None:
-    """Find a BGM audio file for the given mood from the BGM directory."""
-    from app.config import settings
-    import random
-
-    bgm_dir = Path(settings.BGM_DIR)
-    if not bgm_dir.exists():
-        return None
-
-    # Look for files in mood subdirectory or root with mood prefix
-    mood_dir = bgm_dir / mood
-    candidates: list[Path] = []
-    if mood_dir.is_dir():
-        candidates = list(mood_dir.glob("*.mp3")) + list(mood_dir.glob("*.wav"))
-    if not candidates:
-        candidates = list(bgm_dir.glob(f"{mood}*.mp3")) + list(bgm_dir.glob(f"{mood}*.wav"))
-    if not candidates:
-        # Fall back to any BGM file
-        candidates = list(bgm_dir.glob("*.mp3")) + list(bgm_dir.glob("*.wav"))
-
-    if candidates:
-        return str(random.choice(candidates))
-    return None

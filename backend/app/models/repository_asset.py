@@ -7,7 +7,7 @@ from typing import Optional
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database import Base
+from app.db.session import Base
 
 
 class RepositoryAsset(Base):

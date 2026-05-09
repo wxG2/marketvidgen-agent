@@ -9,9 +9,9 @@ from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_auto_chat_session_for_user, get_current_user, get_project_for_user
-from app.config import settings
-from app.database import get_db
+from app.core.security import get_auto_chat_session_for_user, get_current_user, get_project_for_user
+from app.core.config import settings
+from app.db.session import get_db
 from app.models.project import Project
 from app.models.user import User
 from app.models.video_upload import VideoUpload

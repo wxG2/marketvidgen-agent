@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
+from app.db.session import get_db
 from app.models.pipeline import AgentExecution, PipelineRun
 from app.models.usage import ModelUsage
 

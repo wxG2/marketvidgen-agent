@@ -7,7 +7,7 @@ from typing import Optional
 from sqlalchemy import CheckConstraint, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database import Base
+from app.db.session import Base
 
 
 class TalkingHeadTask(Base):

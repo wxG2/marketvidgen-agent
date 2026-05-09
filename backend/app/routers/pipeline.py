@@ -8,6 +8,7 @@ from typing import AsyncGenerator
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +16,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from pathlib import Path
 
-from app.auth import (
+from app.core.security import (
     compile_background_template,
     get_auto_chat_session_for_user,
     get_background_template_for_user,
@@ -25,8 +26,8 @@ from app.auth import (
     get_project_for_user,
     get_social_account_for_user,
 )
-from app.config import settings
-from app.database import get_db
+from app.core.config import settings
+from app.db.session import get_db
 from app.models.auto_chat import AutoChatSession
 from app.models.material import Material
 from app.models.pipeline import PipelineRun, AgentExecution
@@ -66,7 +67,7 @@ from app.services.video_delivery import (
 from app.services.pipeline_artifact_repository import serialize_repository_asset
 from app.services.social_accounts import serialize_social_account
 from app.services.usage_service import UsageRecorder
-from app.database import async_session
+from app.db.session import async_session
 
 # ---------------------------------------------------------------------------
 # In-process pipeline task registry
@@ -405,6 +406,24 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
             "recommended_publish_account": recommended_account,
             "latest_publish_draft": latest_publish_draft,
         }
+
+    @router.get("/projects/{project_id}/pipeline/{run_id}/final-video")
+    async def get_pipeline_final_video(
+        project_id: str,
+        run_id: str,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        run = await get_pipeline_run_for_user(db, user.id, run_id)
+        if run.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Pipeline run not found")
+        if not run.final_video_path:
+            raise HTTPException(status_code=404, detail="Pipeline has no final video yet")
+
+        video_path = Path(run.final_video_path).resolve()
+        if not video_path.exists():
+            raise HTTPException(status_code=404, detail="Final video file not found")
+        return FileResponse(video_path, media_type="video/mp4", filename=f"{run.id}.mp4")
 
     @router.post("/projects/{project_id}/pipeline/{run_id}/delivery/save", response_model=VideoDeliveryResponse)
     async def save_pipeline_video(
@@ -958,7 +977,7 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
     ):
         """Pre-launch check: estimate audio duration vs available video capacity."""
         await get_project_for_user(db, user.id, project_id)
-        from app.config import settings as _settings
+        from app.core.config import settings as _settings
 
         script = req.script
         image_count = req.image_count

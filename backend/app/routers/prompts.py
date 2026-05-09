@@ -8,8 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
-from app.auth import get_current_user, get_project_for_user
-from app.database import get_db
+from app.core.security import get_current_user, get_project_for_user
+from app.db.session import get_db
 from app.models.prompt import PromptMessage, Prompt
 from app.models.material_selection import MaterialSelection
 from app.models.video_analysis import VideoAnalysis

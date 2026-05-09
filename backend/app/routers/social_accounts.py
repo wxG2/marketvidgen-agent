@@ -7,8 +7,8 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user, get_social_account_for_user
-from app.database import get_db
+from app.core.security import get_current_user, get_social_account_for_user
+from app.db.session import get_db
 from app.models.social_account import SocialAccount
 from app.models.user import User
 from app.schemas.social_account import SocialAccountConnectResponse, SocialAccountResponse

@@ -5,7 +5,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.auth import compile_background_template
+from app.core.security import compile_background_template
 from app.models.background_template import BackgroundTemplate, BackgroundTemplateLearningLog
 from app.services.llm_service import LLMService
 

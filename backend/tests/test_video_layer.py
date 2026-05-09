@@ -73,7 +73,7 @@ def _shot(
 @pytest.mark.asyncio
 async def test_uses_generation_duration_seconds_not_final_cut(monkeypatch):
     """Model must be called with generation_duration_seconds, not duration_seconds."""
-    from app.config import settings
+    from app.core.config import settings
     monkeypatch.setattr(settings, "SEEDANCE_SUPPORTED_DURATIONS", [4, 5, 6, 7, 8, 9, 10])
     monkeypatch.setattr(settings, "VIDEO_GENERATION_TIMEOUT_SECONDS", 10)
     monkeypatch.setattr(settings, "MAX_CONCURRENT_SHOTS", 2)
@@ -91,7 +91,7 @@ async def test_uses_generation_duration_seconds_not_final_cut(monkeypatch):
 @pytest.mark.asyncio
 async def test_generation_duration_covers_final_cut(monkeypatch):
     """generation_duration used by model must be >= final-cut duration."""
-    from app.config import settings
+    from app.core.config import settings
     monkeypatch.setattr(settings, "SEEDANCE_SUPPORTED_DURATIONS", [4, 5, 6, 7, 8, 9, 10])
     monkeypatch.setattr(settings, "VIDEO_GENERATION_TIMEOUT_SECONDS", 10)
     monkeypatch.setattr(settings, "MAX_CONCURRENT_SHOTS", 2)
@@ -108,7 +108,7 @@ async def test_generation_duration_covers_final_cut(monkeypatch):
 @pytest.mark.asyncio
 async def test_fails_when_generation_duration_exceeds_all_supported(monkeypatch):
     """If generation_duration_seconds > max supported, raise RuntimeError."""
-    from app.config import settings
+    from app.core.config import settings
     monkeypatch.setattr(settings, "SEEDANCE_SUPPORTED_DURATIONS", [4, 5, 10])
     monkeypatch.setattr(settings, "VIDEO_GENERATION_TIMEOUT_SECONDS", 10)
     monkeypatch.setattr(settings, "MAX_CONCURRENT_SHOTS", 2)
@@ -125,7 +125,7 @@ async def test_fails_when_generation_duration_exceeds_all_supported(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_model_no_audio_forwarded(monkeypatch):
-    from app.config import settings
+    from app.core.config import settings
     monkeypatch.setattr(settings, "SEEDANCE_SUPPORTED_DURATIONS", [4, 5, 6, 7, 8, 9, 10])
     monkeypatch.setattr(settings, "VIDEO_GENERATION_TIMEOUT_SECONDS", 10)
     monkeypatch.setattr(settings, "MAX_CONCURRENT_SHOTS", 2)
@@ -143,7 +143,7 @@ async def test_model_no_audio_forwarded(monkeypatch):
 @pytest.mark.asyncio
 async def test_model_no_audio_default_is_on(monkeypatch):
     """Default (no flag set) must match settings.SEEDANCE_NO_AUDIO (True = silent)."""
-    from app.config import settings
+    from app.core.config import settings
     monkeypatch.setattr(settings, "SEEDANCE_SUPPORTED_DURATIONS", [4, 5, 6, 7, 8, 9, 10])
     monkeypatch.setattr(settings, "VIDEO_GENERATION_TIMEOUT_SECONDS", 10)
     monkeypatch.setattr(settings, "MAX_CONCURRENT_SHOTS", 2)
@@ -160,7 +160,7 @@ async def test_model_no_audio_default_is_on(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_raises_on_generation_failure(monkeypatch):
-    from app.config import settings
+    from app.core.config import settings
     monkeypatch.setattr(settings, "SEEDANCE_SUPPORTED_DURATIONS", [4, 5, 6, 7, 8, 9, 10])
     monkeypatch.setattr(settings, "VIDEO_GENERATION_TIMEOUT_SECONDS", 10)
     monkeypatch.setattr(settings, "MAX_CONCURRENT_SHOTS", 2)
@@ -172,7 +172,7 @@ async def test_raises_on_generation_failure(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_raises_when_image_path_missing(monkeypatch):
-    from app.config import settings
+    from app.core.config import settings
     monkeypatch.setattr(settings, "SEEDANCE_SUPPORTED_DURATIONS", [4, 5, 6, 7, 8, 9, 10])
     monkeypatch.setattr(settings, "VIDEO_GENERATION_TIMEOUT_SECONDS", 10)
     monkeypatch.setattr(settings, "MAX_CONCURRENT_SHOTS", 2)
@@ -187,7 +187,7 @@ async def test_raises_when_image_path_missing(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_result_contains_required_fields(monkeypatch):
-    from app.config import settings
+    from app.core.config import settings
     monkeypatch.setattr(settings, "SEEDANCE_SUPPORTED_DURATIONS", [4, 5, 6, 7, 8, 9, 10])
     monkeypatch.setattr(settings, "VIDEO_GENERATION_TIMEOUT_SECONDS", 10)
     monkeypatch.setattr(settings, "MAX_CONCURRENT_SHOTS", 2)

@@ -5,7 +5,7 @@ import os
 import re
 from abc import ABC, abstractmethod
 
-from app.config import settings
+from app.core.config import settings
 from app.services.media_utils import run_subprocess
 
 logger = logging.getLogger(__name__)

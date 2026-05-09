@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from app.agents.stages.replication_planner import ReplicationPlannerAgent
-from app.config import settings
+from app.core.config import settings
 
 
 def _make_agent() -> ReplicationPlannerAgent:

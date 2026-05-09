@@ -5,7 +5,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter
 
-from app.config import settings
+from app.core.config import settings
 
 
 router = APIRouter(tags=["examples"])

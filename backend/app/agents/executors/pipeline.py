@@ -17,7 +17,7 @@ from app.agents.stages.replication_planner import ReplicationPlannerAgent
 from app.agents.stages.requirement_parser import RequirementParserAgent
 from app.agents.stages.video_editor import VideoEditorAgent
 from app.agents.stages.video_generator import VideoGeneratorAgent
-from app.config import settings
+from app.core.config import settings
 from app.services.usage_service import UsageRecorder
 
 import asyncio

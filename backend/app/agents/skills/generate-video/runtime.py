@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.auth import compile_background_template
-from app.config import settings
+from app.core.security import compile_background_template
+from app.core.config import settings
 from app.models.background_template import BackgroundTemplate
 from app.models.auto_chat import AutoChatSession
 from app.models.material import Material

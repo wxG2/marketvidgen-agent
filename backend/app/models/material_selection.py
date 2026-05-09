@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database import Base
+from app.db.session import Base
 
 
 class MaterialSelection(Base):

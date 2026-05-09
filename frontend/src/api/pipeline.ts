@@ -28,6 +28,9 @@ export const getPipelineUsage = (projectId: string, runId: string) =>
 export const getPipelineDelivery = (projectId: string, runId: string) =>
   api.get<PipelineDeliveryInfo>(`/api/projects/${projectId}/pipeline/${runId}/delivery`).then(r => r.data)
 
+export const getPipelineFinalVideoUrl = (projectId: string, runId: string) =>
+  `/api/projects/${projectId}/pipeline/${runId}/final-video`
+
 export const getPipelineArtifacts = (projectId: string, runId: string) =>
   api.get<RepositoryAsset[]>(`/api/projects/${projectId}/pipeline/${runId}/artifacts`).then(r => r.data)
 

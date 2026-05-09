@@ -1,0 +1,9 @@
+# Temporary exceptions for the 500-line business source file rule.
+# Format: <repo-relative path> # <reason or target extraction>
+# Keep this list shrinking; new exceptions should be rare and justified in review.
+
+backend/app/routers/pipeline.py # split task registry, review/retry handlers, delivery helpers, and cost estimation out of the router
+frontend/src/components/pipeline/AutoModeStudio.vue # split chat session state, pipeline run state, delivery/publish actions, and major UI sections
+backend/app/agents/chat/agent.py # split skill routing, stream event formatting, and tool orchestration
+backend/app/routers/auto_sessions.py # split serialization, bootstrap/context loading, and chat streaming service code
+backend/app/agents/stages/replication_planner.py # split material analysis, shot planning, prompt construction, and response parsing

@@ -11,9 +11,9 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user, get_material_for_user, get_project_for_user
-from app.config import settings
-from app.database import get_db
+from app.core.security import get_current_user, get_material_for_user, get_project_for_user
+from app.core.config import settings
+from app.db.session import get_db
 from app.models.material import Material
 from app.models.material_selection import MaterialSelection
 from app.models.user import User

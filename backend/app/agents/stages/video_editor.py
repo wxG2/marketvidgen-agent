@@ -4,7 +4,7 @@ import os
 import uuid
 
 from app.agents.core.base import AgentContext, AgentResult, BaseAgent
-from app.services.video_editor_service import VideoEditorService
+from app.services.video_editing.composer import VideoEditorService
 
 
 class VideoEditorAgent(BaseAgent):

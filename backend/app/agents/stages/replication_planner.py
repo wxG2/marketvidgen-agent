@@ -11,7 +11,7 @@ from typing import TypeVar
 from sqlalchemy import select
 
 from app.agents.core.base import AgentContext, AgentResult, BaseAgent
-from app.config import settings
+from app.core.config import settings
 from app.models.auto_chat import AutoSessionMaterialSelection
 from app.models.material import Material
 from app.models.pipeline import PipelineRun

@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 from app.agents.core.base import AgentContext, AgentResult, BaseAgent, describe_exception
-from app.config import settings
+from app.core.config import settings
 from app.services.video_generator import VideoGenerator
 
 logger = logging.getLogger(__name__)
@@ -41,11 +41,16 @@ class VideoGeneratorAgent(BaseAgent):
         normalized_prompts: list[dict] = []
         for shot in shot_prompts:
             enriched = dict(shot)
-            source = source_by_idx.get(enriched.get("shot_idx"))
-            if source and source.get("image_path"):
-                enriched["image_path"] = source["image_path"]
-                enriched["source_image"] = source
-                enriched.setdefault("image_content", source.get("image_content", ""))
+            # Only fall back to source_images lookup when the director/upstream
+            # did not already resolve image_path (e.g. via source_image_idx).
+            # Unconditionally overwriting here would reset the director's
+            # intentional material reordering back to sequential order.
+            if not enriched.get("image_path"):
+                source = source_by_idx.get(enriched.get("shot_idx"))
+                if source and source.get("image_path"):
+                    enriched["image_path"] = source["image_path"]
+                    enriched["source_image"] = source
+                    enriched.setdefault("image_content", source.get("image_content", ""))
             normalized_prompts.append(enriched)
         shot_prompts = normalized_prompts
         self._no_audio = input_data.get(

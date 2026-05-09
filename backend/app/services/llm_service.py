@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from app.prompts import GENERIC_PROMPT_GENERATION_SYSTEM_PROMPT
-from app.services.qwen_client import QwenClient
+from app.services.llm.qwen_client import QwenClient
 
 
 class LLMService(ABC):

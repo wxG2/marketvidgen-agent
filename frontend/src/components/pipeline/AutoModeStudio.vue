@@ -18,10 +18,12 @@ import {
   getPipelineAgents,
   getPipelineArtifacts,
   getPipelineDelivery,
+  getPipelineFinalVideoUrl,
   getPipelineRun,
   getPipelineUsage,
   launchPipeline,
   preflightCheck,
+  retryFailedAgent,
   retryShotIndices,
   savePipelineVideo,
   streamPipeline,
@@ -79,6 +81,19 @@ type DouyinOAuthMessage = {
   message?: string
 }
 
+type AutoDurationMode = 'auto' | 'fixed'
+type AutoTransition = 'none' | 'fade' | 'dissolve' | 'slideright' | 'slideup'
+type AutoBgmMood = 'none' | 'upbeat' | 'calm' | 'cinematic' | 'energetic'
+
+const AUTO_PIPELINE_CODE_SWITCHES = {
+  durationMode: 'auto' as AutoDurationMode,
+  videoModelNoAudio: true,
+  voiceoverNoAudio: false,
+  videoTransition: 'none' as AutoTransition,
+  bgmMood: 'none' as AutoBgmMood,
+  skipVideoGeneration: false,
+}
+
 const sessionSummaries = ref<AutoChatSessionSummary[]>([])
 const activeSessionId = ref<string | null>(null)
 const loadingSessions = ref(true)
@@ -91,13 +106,13 @@ const backgroundTemplateId = ref<string | null>(null)
 const projects = ref<Project[]>([])
 const script = ref('')
 const videoPlatform = ref('generic')
-const videoNoAudio = ref(true)
-const voiceoverNoAudio = ref(false)
+const videoNoAudio = ref(AUTO_PIPELINE_CODE_SWITCHES.videoModelNoAudio)
+const voiceoverNoAudio = ref(AUTO_PIPELINE_CODE_SWITCHES.voiceoverNoAudio)
 const videoGenerationModel = ref('seedance1.5-pro')
-const durationMode = ref<'auto' | 'fixed'>('fixed')
-const videoTransition = ref('none')
-const bgmMood = ref('none')
-const skipVideoGeneration = ref(true)
+const durationMode = ref<AutoDurationMode>(AUTO_PIPELINE_CODE_SWITCHES.durationMode)
+const videoTransition = ref<AutoTransition>(AUTO_PIPELINE_CODE_SWITCHES.videoTransition)
+const bgmMood = ref<AutoBgmMood>(AUTO_PIPELINE_CODE_SWITCHES.bgmMood)
+const skipVideoGeneration = ref(AUTO_PIPELINE_CODE_SWITCHES.skipVideoGeneration)
 const watermarkId = ref<string | null>(null)
 const referenceVideoId = ref<string | null>(null)
 const referenceVideoName = ref<string | null>(null)
@@ -121,6 +136,7 @@ const shotEdits = ref<Record<number, { script_segment?: string; video_prompt?: s
 const costEstimate = ref<{ estimated_total_cny: number; breakdown: Record<string, number>; shot_count: number; warning?: string | null } | null>(null)
 const loadingCostEstimate = ref(false)
 const retryingShots = ref<Set<number>>(new Set())
+const retryingFailedRun = ref(false)
 const adjustmentText = ref('')
 const savingDelivery = ref(false)
 const draftingPublish = ref(false)
@@ -167,6 +183,54 @@ const artifactGroups = computed(() => {
       items: pipelineArtifacts.value.filter((item) => item.source_agent === agent),
     }))
     .filter((group) => group.items.length > 0)
+})
+
+const pipelineProgressSteps = computed(() => {
+  const run = currentRun.value
+  if (!run) return []
+  const preferredAgents = [
+    'replication_planner',
+    'orchestrator',
+    'prompt_engineer',
+    'audio_subtitle',
+    'video_generator',
+    'video_editor',
+    'qa_reviewer',
+  ]
+  const executionByAgent = new Map<string, AgentExecution>()
+  for (const execution of agentExecutions.value) {
+    executionByAgent.set(execution.agent_name, execution)
+  }
+  const agents = preferredAgents.filter((agent) => executionByAgent.has(agent) || run.current_agent === agent)
+  for (const execution of agentExecutions.value) {
+    if (!agents.includes(execution.agent_name)) agents.push(execution.agent_name)
+  }
+  return agents.map((agent) => ({
+    agent,
+    label: agentLabel(agent),
+    status: executionByAgent.get(agent)?.status || (run.current_agent === agent ? run.status : 'pending'),
+    progressText: executionByAgent.get(agent)?.progress_text || '',
+    errorMessage: executionByAgent.get(agent)?.error_message || '',
+  }))
+})
+
+const pipelineProgressCard = computed(() => {
+  const run = currentRun.value
+  if (!run) return null
+  const activeStep = pipelineProgressSteps.value.find((step) => step.status === 'running')
+    || pipelineProgressSteps.value.find((step) => step.agent === run.current_agent)
+  const latestExecution = [...agentExecutions.value]
+    .reverse()
+    .find((execution) => execution.progress_text || execution.error_message)
+  const latestText = latestExecution?.error_message || latestExecution?.progress_text || run.error_message || ''
+  const latestLine = latestText.split('\n').filter(Boolean).at(-1) || ''
+  return {
+    run,
+    activeLabel: activeStep?.label || agentLabel(run.current_agent || ''),
+    latestLine,
+    finalVideoUrl: run.final_video_path ? getPipelineFinalVideoUrl(props.projectId, run.id) : null,
+    steps: pipelineProgressSteps.value,
+  }
 })
 
 function isTerminalRunStatus(status: string | undefined | null) {
@@ -219,13 +283,53 @@ function statusText(status: string | undefined | null) {
   return labels[status] || status
 }
 
+function progressStepClass(status: string) {
+  if (status === 'completed') return 'border-[#c7d9a3] bg-[#f4f8e9] text-[#526b32]'
+  if (status === 'running') return 'border-[#d6b46b] bg-[#fff8e5] text-[#8b6914]'
+  if (status === 'failed') return 'border-[#e8b9af] bg-[#fff1ec] text-[#9b3f34]'
+  if (status === 'cancelled') return 'border-[#d6c8b3] bg-[#f6efe4] text-[#8a7857]'
+  return 'border-[#e2d5bf] bg-white/70 text-[#8a7857]'
+}
+
+function sequenceRoleText(role: string | undefined) {
+  const labels: Record<string, string> = {
+    hook: '开场钩子',
+    problem_or_scene: '场景/痛点',
+    core_value: '核心卖点',
+    proof_or_detail: '细节证明',
+    result_or_lifestyle: '结果/生活方式',
+    cta: '转化收束',
+  }
+  return labels[role || ''] || role || '营销节点'
+}
+
+function isImageSelection(item: MaterialSelection) {
+  return Boolean(item.material?.media_type?.startsWith('image'))
+}
+
+function selectedMaterialThumbnailUrl(item: MaterialSelection) {
+  return item.material?.thumbnail_url || `/api/materials/${item.material_id}/thumbnail`
+}
+
+function selectedMaterialName(item: MaterialSelection) {
+  return item.material?.filename || item.category || '素材'
+}
+
+function selectedMaterialMeta(item: MaterialSelection) {
+  return item.material?.category || item.category || item.material?.media_type || '素材'
+}
+
 function agentLabel(agent: string) {
   const labels: Record<string, string> = {
+    replication_planner: '复刻规划',
+    orchestrator: '素材理解',
     prompt_engineer: '提示词 Agent',
     audio_subtitle: '音频 Agent',
     video_generator: '视频生成 Agent',
+    video_editor: '剪辑合成',
+    qa_reviewer: '质量检查',
   }
-  return labels[agent] || agent
+  return labels[agent] || agent || 'agent'
 }
 
 function artifactTypeLabel(asset: RepositoryAsset) {
@@ -295,12 +399,13 @@ function hydrate(detail: AutoChatSessionDetail) {
   referenceVideoId.value = detail.state.reference_video_id
   referenceVideoName.value = detail.reference_video?.filename || detail.session.reference_video_name || null
   videoPlatform.value = detail.state.video_platform || 'generic'
-  videoNoAudio.value = detail.state.video_model_no_audio ?? detail.state.video_no_audio
-  voiceoverNoAudio.value = detail.state.voiceover_no_audio ?? false
+  videoNoAudio.value = AUTO_PIPELINE_CODE_SWITCHES.videoModelNoAudio
+  voiceoverNoAudio.value = AUTO_PIPELINE_CODE_SWITCHES.voiceoverNoAudio
   videoGenerationModel.value = detail.state.generation_model || 'seedance1.5-pro'
-  durationMode.value = (detail.state.duration_mode as 'auto' | 'fixed') || 'fixed'
-  videoTransition.value = detail.state.video_transition || 'none'
-  bgmMood.value = detail.state.bgm_mood || 'none'
+  durationMode.value = AUTO_PIPELINE_CODE_SWITCHES.durationMode
+  videoTransition.value = AUTO_PIPELINE_CODE_SWITCHES.videoTransition
+  bgmMood.value = AUTO_PIPELINE_CODE_SWITCHES.bgmMood
+  skipVideoGeneration.value = AUTO_PIPELINE_CODE_SWITCHES.skipVideoGeneration
   watermarkId.value = detail.state.watermark_id
   currentRun.value = detail.current_run
   agentExecutions.value = detail.agent_executions
@@ -428,6 +533,57 @@ function maybeTrackToolRun(payload: unknown) {
   }
 }
 
+function isContinueRetryCommand(content: string) {
+  const normalized = content.trim().toLowerCase()
+  return ['continue', '/continue', 'retry', '/retry', '继续', '重试'].includes(normalized)
+}
+
+async function retryFailedRunFromChat(content: string, sessionId: string) {
+  if (!currentRun.value || currentRun.value.status !== 'failed') return false
+  if (!isContinueRetryCommand(content)) return false
+  if (retryingFailedRun.value) return true
+
+  input.value = ''
+  messages.value.push({
+    id: `local-user-${Date.now()}`,
+    role: 'user',
+    content,
+    created_at: new Date().toISOString(),
+  })
+  await scrollToEnd()
+
+  retryingFailedRun.value = true
+  try {
+    const run = await retryFailedAgent(props.projectId, currentRun.value.id)
+    currentRun.value = run
+    setCurrentRun(run)
+    messages.value.push({
+      id: `local-assistant-${Date.now()}`,
+      role: 'assistant',
+      title: '继续执行',
+      content: '已重新提交失败阶段，系统会从最近失败的 Agent 继续执行；如果分镜视频已生成，会复用已有视频片段并重试音频/剪辑。',
+      created_at: new Date().toISOString(),
+    })
+    toast('success', '已继续执行失败流程')
+    startPolling(run.id)
+    if (activeSessionId.value === sessionId) refreshSessions(sessionId)
+  } catch (error) {
+    const message = readableError(error, '继续执行失败')
+    messages.value.push({
+      id: `local-assistant-${Date.now()}`,
+      role: 'assistant',
+      title: '继续执行失败',
+      content: message,
+      created_at: new Date().toISOString(),
+    })
+    toast('error', message)
+  } finally {
+    retryingFailedRun.value = false
+    await scrollToEnd()
+  }
+  return true
+}
+
 async function stopChatStream() {
   if (!streaming.value && !currentStream && !chatAbortController) return
   abortingChat.value = true
@@ -443,6 +599,8 @@ async function sendMessage(forceTool?: string) {
   const content = input.value.trim()
   if (!content || !activeSessionId.value || streaming.value) return
   const sessionId = activeSessionId.value
+  if (await retryFailedRunFromChat(content, sessionId)) return
+
   const requestId = ++chatRequestSeq
   const abortController = new AbortController()
   activeChatRequestId = requestId
@@ -964,39 +1122,30 @@ defineExpose({ handleRepositoryPicked })
           <button type="button" class="rounded-lg border border-[#d7c7a8] bg-white px-3 py-1.5 hover:bg-[#f4ead8]" @click="emit('openRepositoryPicker')">
             从仓库添加素材 / 参考视频
           </button>
-          <button type="button" class="rounded-lg border border-[#d7c7a8] bg-white px-3 py-1.5 hover:bg-[#f4ead8]" @click="durationMode = durationMode === 'auto' ? 'fixed' : 'auto'">
-            时长：{{ durationMode === 'auto' ? '自动' : '固定' }}
-          </button>
-          <button type="button" class="rounded-lg border border-[#d7c7a8] bg-white px-3 py-1.5 hover:bg-[#f4ead8]" @click="videoNoAudio = !videoNoAudio">
-            模型原声：{{ videoNoAudio ? '关闭' : '开启' }}
-          </button>
-          <button type="button" class="rounded-lg border border-[#d7c7a8] bg-white px-3 py-1.5 hover:bg-[#f4ead8]" @click="voiceoverNoAudio = !voiceoverNoAudio">
-            系统配音：{{ voiceoverNoAudio ? '关闭' : '开启' }}
-          </button>
-          <select v-model="videoTransition" class="rounded-lg border border-[#d7c7a8] bg-white px-3 py-1.5">
-            <option value="none">无转场</option>
-            <option value="fade">淡入淡出</option>
-            <option value="crossfade">交叉淡化</option>
-          </select>
-          <select v-model="bgmMood" class="rounded-lg border border-[#d7c7a8] bg-white px-3 py-1.5">
-            <option value="none">无 BGM</option>
-            <option value="bright">明亮</option>
-            <option value="calm">平稳</option>
-            <option value="energetic">活力</option>
-          </select>
-          <button
-            type="button"
-            :class="['rounded-lg border px-3 py-1.5', skipVideoGeneration ? 'border-[#c7a868] bg-[#f4ead8] text-[#8b6914]' : 'border-[#d7c7a8] bg-white']"
-            @click="skipVideoGeneration = !skipVideoGeneration"
-          >
-            视频生成：{{ skipVideoGeneration ? '关闭' : '开启' }}
-          </button>
         </div>
 
-        <div class="mt-3 flex flex-wrap gap-2">
-          <span v-for="item in selectedMaterials" :key="item.id" class="rounded-full bg-[#edf5de] px-3 py-1 text-xs text-[#526b32]">
-            {{ item.material?.filename || item.category }}
-          </span>
+        <div class="mt-3 flex flex-wrap items-center gap-2">
+          <div
+            v-for="item in selectedMaterials"
+            :key="item.id"
+            class="flex h-16 max-w-56 items-center gap-2 rounded-lg border border-[#c7d9a3] bg-[#f7fbef] p-1.5 pr-3 text-left"
+            :title="selectedMaterialName(item)"
+          >
+            <img
+              v-if="isImageSelection(item)"
+              class="h-12 w-12 shrink-0 rounded-md bg-white object-cover"
+              :src="selectedMaterialThumbnailUrl(item)"
+              :alt="selectedMaterialName(item)"
+              loading="lazy"
+            >
+            <div v-else class="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-white text-xs font-semibold text-[#526b32]">
+              {{ selectedMaterialMeta(item).slice(0, 2) }}
+            </div>
+            <div class="min-w-0">
+              <div class="truncate text-xs font-medium text-[#526b32]">{{ selectedMaterialName(item) }}</div>
+              <div class="mt-1 truncate text-[11px] text-[#7a8d56]">{{ selectedMaterialMeta(item) }}</div>
+            </div>
+          </div>
           <span v-if="referenceVideoName" class="rounded-full bg-[#eef7fb] px-3 py-1 text-xs text-[#315065]">
             参考视频：{{ referenceVideoName }}
           </span>
@@ -1023,6 +1172,7 @@ defineExpose({ handleRepositoryPicked })
                 <thead class="bg-[#edf5de] text-[#526b32]">
                   <tr>
                     <th class="px-3 py-2 text-left font-medium">镜头</th>
+                    <th class="px-3 py-2 text-left font-medium">素材/作用</th>
                     <th class="px-3 py-2 text-left font-medium">节奏区间</th>
                     <th class="px-3 py-2 text-left font-medium">旁白</th>
                     <th class="px-3 py-2 text-left font-medium">视频提示词</th>
@@ -1031,6 +1181,13 @@ defineExpose({ handleRepositoryPicked })
                 <tbody>
                   <tr v-for="shot in message.payload.directorPlan.shot_prompts" :key="shot.shot_idx" class="border-t border-[#e8f0d8]">
                     <td class="px-3 py-2 text-center">{{ shot.shot_idx + 1 }}</td>
+                    <td class="px-3 py-2 leading-5 text-[#6d5936]">
+                      <div class="whitespace-nowrap">{{ shot.source_image_idx !== undefined ? `素材 ${shot.source_image_idx + 1}` : '素材 —' }}</div>
+                      <div class="text-[#526b32]">{{ sequenceRoleText(shot.sequence_role) }}</div>
+                      <div v-if="shot.sequence_reason || shot.shot_purpose" class="mt-1 text-[#8a7857]">
+                        {{ shot.sequence_reason || shot.shot_purpose }}
+                      </div>
+                    </td>
                     <td class="px-3 py-2 whitespace-nowrap">
                       {{ shot.duration_range_label || `${shot.duration_seconds}s` }}
                       <span v-if="shot.duration_range_label" class="text-[#a09070]">（{{ shot.duration_seconds }}s）</span>
@@ -1060,6 +1217,63 @@ defineExpose({ handleRepositoryPicked })
             <img v-for="image in message.payload.images" :key="image.id" :src="image.url" :alt="image.name" class="h-24 rounded-lg object-cover">
           </div>
           <video v-if="message.payload?.video" class="mt-3 max-h-80 w-full rounded-lg bg-black" controls :src="message.payload.video.streamUrl" />
+        </article>
+
+        <article v-if="pipelineProgressCard" class="max-w-3xl rounded-lg border border-[#d7c7a8] bg-white/85 p-4 text-sm leading-6">
+          <div class="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <div class="text-xs font-medium text-[#867351]">生成进度</div>
+              <div class="mt-1 text-sm font-semibold text-[#4f3b1f]">{{ statusText(pipelineProgressCard.run.status) }}</div>
+            </div>
+            <span class="shrink-0 rounded-full bg-[#f2e8d6] px-3 py-1 text-xs text-[#6d5936]">
+              {{ pipelineProgressCard.activeLabel }}
+            </span>
+          </div>
+          <div v-if="pipelineProgressCard.steps.length" class="grid gap-2 sm:grid-cols-2">
+            <div
+              v-for="step in pipelineProgressCard.steps"
+              :key="step.agent"
+              class="rounded-lg border px-3 py-2"
+              :class="progressStepClass(step.status)"
+            >
+              <div class="flex items-center justify-between gap-2">
+                <span class="truncate text-xs font-medium">{{ step.label }}</span>
+                <span class="shrink-0 text-[11px]">{{ statusText(step.status) }}</span>
+              </div>
+            </div>
+          </div>
+          <p v-if="pipelineProgressCard.latestLine" class="mt-3 whitespace-pre-wrap rounded-lg bg-[#fff8ec] p-3 text-xs leading-5 text-[#8a7857]">
+            {{ pipelineProgressCard.latestLine }}
+          </p>
+          <p v-if="pipelineProgressCard.run.error_message" class="mt-3 rounded-lg bg-[#fff1ec] p-3 text-xs text-[#8a3a2b]">
+            {{ pipelineProgressCard.run.error_message }}
+          </p>
+          <video
+            v-if="pipelineProgressCard.finalVideoUrl && pipelineProgressCard.run.status === 'completed'"
+            class="mt-3 max-h-80 w-full rounded-lg bg-black object-contain"
+            controls
+            :src="pipelineProgressCard.finalVideoUrl"
+          />
+          <div v-if="hasActiveRunControl || currentRun?.status === 'waiting_prompt_review'" class="mt-3 flex flex-wrap gap-2">
+            <button
+              v-if="currentRun?.status === 'waiting_prompt_review'"
+              type="button"
+              class="rounded-lg bg-[#7e9d53] px-3 py-2 text-xs text-white hover:bg-[#718f47] disabled:opacity-50"
+              :disabled="confirmingPromptReview"
+              @click="confirmPromptReviewAction"
+            >
+              {{ confirmingPromptReview ? '确认中...' : '确认并生成视频' }}
+            </button>
+            <button
+              v-if="hasActiveRunControl"
+              type="button"
+              class="rounded-lg border border-[#b95c50] px-3 py-2 text-xs text-[#9b3f34] hover:bg-[#fff1ec] disabled:opacity-50"
+              :disabled="cancellingRun"
+              @click="cancelCurrentRun"
+            >
+              {{ cancellingRun ? '取消中...' : (currentRun?.status === 'waiting_confirmation' ? '终止流程' : '取消流程') }}
+            </button>
+          </div>
         </article>
 
         <article v-if="streaming" class="max-w-3xl rounded-lg border border-[#d7c7a8] bg-white/85 p-4 text-sm leading-6">
@@ -1093,8 +1307,8 @@ defineExpose({ handleRepositoryPicked })
           >
             {{ abortingChat ? '中止中...' : '中止对话' }}
           </button>
-          <button v-else type="submit" class="rounded-lg bg-[#7e9d53] px-5 py-2 text-sm text-white hover:bg-[#718f47] disabled:opacity-50" :disabled="!input.trim()">
-            发送
+          <button v-else type="submit" class="rounded-lg bg-[#7e9d53] px-5 py-2 text-sm text-white hover:bg-[#718f47] disabled:opacity-50" :disabled="!input.trim() || retryingFailedRun">
+            {{ retryingFailedRun ? '继续中...' : '发送' }}
           </button>
         </div>
       </form>

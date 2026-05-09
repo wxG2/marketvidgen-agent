@@ -6,14 +6,14 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user, get_project_for_user
-from app.database import get_db
+from app.core.security import get_current_user, get_project_for_user
+from app.db.session import get_db
 from app.models.project import Project
 from app.models.user import User
 from app.schemas.project import ProjectCreate, ProjectUpdate, ProjectResponse
 from app.schemas.pipeline import ProjectHistoryResponse, ProjectUsageSummaryResponse
 from app.services.usage_service import UsageRecorder
-from app.database import async_session
+from app.db.session import async_session
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 

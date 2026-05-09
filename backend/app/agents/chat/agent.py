@@ -1193,7 +1193,7 @@ class ChatAgent:
 
     def _mem0_search_limit(self) -> int:
         try:
-            from app.config import settings
+            from app.core.config import settings
             return settings.MEM0_SEARCH_LIMIT
         except Exception:
             return 5

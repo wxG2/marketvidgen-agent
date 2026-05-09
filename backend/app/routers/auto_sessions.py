@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
-from app.auth import (
+from app.core.security import (
     get_auto_chat_session_for_user,
     get_background_template_for_user,
     get_current_user,
@@ -21,8 +21,8 @@ from app.auth import (
     get_project_for_user,
     get_social_account_for_user,
 )
-from app.config import settings
-from app.database import async_session, get_db
+from app.core.config import settings
+from app.db.session import async_session, get_db
 from app.models.auto_chat import AutoChatMessage, AutoChatSession, AutoSessionMaterialSelection
 from app.models.material import Material
 from app.models.material_selection import MaterialSelection

@@ -5,7 +5,7 @@ import logging
 from typing import Any
 
 from app.agents.core.base import AgentContext, AgentResult, BaseAgent
-from app.config import settings
+from app.core.config import settings
 from app.prompts import QA_REVIEWER_SYSTEM_PROMPT
 from app.services.llm_service import LLMService
 

@@ -6,8 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user, get_project_for_user
-from app.database import get_db, async_session
+from app.core.security import get_current_user, get_project_for_user
+from app.db.session import get_db, async_session
 from app.models.video_upload import VideoUpload
 from app.models.video_analysis import VideoAnalysis
 from app.models.user import User

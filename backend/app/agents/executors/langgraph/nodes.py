@@ -5,7 +5,7 @@ import logging
 from app.agents.executors.langgraph.exceptions import WaitingConfirmation, WaitingPromptReview
 
 from app.agents.executors.langgraph.state import LangGraphPipelineState
-from app.config import settings
+from app.core.config import settings
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from app.agents.stages.requirement_parser import RequirementParserAgent
@@ -189,6 +189,76 @@ class LangGraphPipelineNodeMixin:
 
     async def resume_from_prompt_review(self, context, input_config: dict) -> dict:
         return await self._run_av_editor_qa(context, input_config)
+
+    async def run_named_agent(self, context, agent_name: str, input_config: dict) -> dict:
+        agent = self.get_agent_map()[agent_name]
+        agent_input = self.build_agent_input(agent_name, context.artifacts, input_config)
+        result = await agent.run(context, agent_input)
+        if not result.success:
+            await self._update_run(
+                context.pipeline_run_id,
+                status="running",
+                current_agent=agent_name,
+            )
+            raise RuntimeError(f"Agent {agent_name} failed: {result.error}")
+
+        artifact_key = self.get_agent_to_artifact_key().get(agent_name)
+        if artifact_key:
+            context.artifacts[artifact_key] = result.output_data
+            await context.save_checkpoint()
+        return result.output_data
+
+    async def _run_qa_after_retry(self, context, input_config: dict) -> None:
+        if not settings.QA_REVIEW_ENABLED or self.qa_reviewer is None:
+            return
+
+        qa_input = self.build_qa_input(context.artifacts, input_config)
+        qa_result = await self.qa_reviewer.run(context, qa_input)
+        if qa_result.success:
+            context.artifacts["qa_report"] = qa_result.output_data
+            await context.save_checkpoint()
+        else:
+            logger.warning("[%s] QA agent execution failed after retry; skipping QA", context.trace_id)
+
+    async def _run_editor_qa_after_retry(self, context, input_config: dict) -> dict:
+        await self.run_named_agent(context, "video_editor", input_config)
+        await self._run_qa_after_retry(context, input_config)
+        return context.artifacts.get("final_video", {})
+
+    async def continue_from_retry(self, context, agent_name: str, input_config: dict) -> dict:
+        if agent_name == "orchestrator":
+            await self.run_named_agent(context, "prompt_engineer", input_config)
+            await asyncio.gather(
+                self.run_named_agent(context, "audio_subtitle", input_config),
+                self.run_named_agent(context, "video_generator", input_config),
+            )
+            return await self._run_editor_qa_after_retry(context, input_config)
+
+        if agent_name == "prompt_engineer":
+            await asyncio.gather(
+                self.run_named_agent(context, "audio_subtitle", input_config),
+                self.run_named_agent(context, "video_generator", input_config),
+            )
+            return await self._run_editor_qa_after_retry(context, input_config)
+
+        if agent_name == "audio_subtitle":
+            if "video_clips" not in context.artifacts:
+                await self.run_named_agent(context, "video_generator", input_config)
+            return await self._run_editor_qa_after_retry(context, input_config)
+
+        if agent_name == "video_generator":
+            if "audio" not in context.artifacts:
+                await self.run_named_agent(context, "audio_subtitle", input_config)
+            return await self._run_editor_qa_after_retry(context, input_config)
+
+        if agent_name == "video_editor":
+            await self._run_qa_after_retry(context, input_config)
+            return context.artifacts.get("final_video", {})
+
+        if agent_name == "qa_reviewer":
+            return context.artifacts.get("final_video", {})
+
+        raise ValueError(f"Cannot continue from retry for agent: {agent_name}")
 
     async def _run_av_editor_qa(self, context, input_config: dict) -> dict:
         audio_input = self.build_audio_input(context.artifacts, input_config)

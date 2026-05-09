@@ -116,7 +116,7 @@ vidgen 不是单点的视频模型调用 Demo，而是一套围绕“项目、�
 - [backend/app/main.py](./backend/app/main.py)
 - [backend/app/README.md](./backend/app/README.md)
 - [backend/app/agents/README.md](./backend/app/agents/README.md)
-- [backend/app/services/qwen_client.py](./backend/app/services/qwen_client.py)
+- [backend/app/services/llm/qwen_client.py](./backend/app/services/llm/qwen_client.py)
 - [backend/app/mcp/server.py](./backend/app/mcp/server.py)
 - [backend/app/routers/analytics.py](./backend/app/routers/analytics.py)
 - [docs/README-zh-CN.md](./docs/README-zh-CN.md)
@@ -171,7 +171,7 @@ vidgen 不是单点的视频模型调用 Demo，而是一套围绕“项目、�
 
 - [backend/app/services/llm_service.py](./backend/app/services/llm_service.py)
 - [backend/app/services/tts_service.py](./backend/app/services/tts_service.py)
-- [backend/app/services/video_generator.py](./backend/app/services/video_generator.py)
+- [backend/app/services/video_generation/router.py](./backend/app/services/video_generation/router.py)
 
 ## MCP、观测与工程化
 
@@ -206,38 +206,59 @@ python -m app.mcp.server
 - 后端已切换为 structlog 结构化日志，支持 `LOG_FORMAT=text|json`
 - 每个 HTTP 请求会自动注入 `X-Request-ID` 响应头，便于关联日志和问题排查
 - 仓库已提供 backend / frontend / Qdrant 三服务 `docker-compose.yml`
-- GitHub Actions 会执行 backend lint + pytest、frontend lint + build，以及 Docker image build
+- GitHub Actions 会执行代码文件行数检查、backend lint + pytest、frontend lint + build，以及 Docker image build
 
 ## 项目结构
 
 ```text
 vidgen/
+├── .github/
+│   └── workflows/
 ├── backend/
+│   ├── alembic/
 │   ├── app/
 │   │   ├── agents/
+│   │   ├── core/
+│   │   ├── db/
+│   │   ├── mcp/
 │   │   ├── models/
 │   │   ├── prompts/
 │   │   ├── routers/
 │   │   ├── schemas/
-│   │   └── services/
+│   │   ├── services/
+│   │   │   ├── llm/
+│   │   │   ├── video_editing/
+│   │   │   └── video_generation/
+│   │   └── utils/
+│   ├── tests/
+│   ├── Dockerfile
+│   ├── alembic.ini
 │   ├── pyproject.toml
 │   ├── requirements.txt
-│   └── requirements-dev.txt
+│   ├── requirements-dev.txt
+│   └── uv.lock
+├── docs/
+│   ├── api/
+│   ├── architecture/
+│   ├── archive/
+│   ├── development/
+│   ├── plans/
+│   ├── portfolio/
+│   └── reports/
 ├── frontend/
+│   ├── public/
 │   ├── src/
 │   │   ├── api/
 │   │   ├── components/
+│   │   ├── composables/
+│   │   ├── lib/
 │   │   ├── stores/
 │   │   └── types/
+│   ├── Dockerfile
+│   ├── package.json
+│   └── vite.config.ts
 ├── scripts/
-├── docs/
-│   ├── architecture/
-│   ├── api/
-│   ├── plans/
-│   ├── reports/
-│   ├── portfolio/
-│   ├── archive/
-│   └── development/
+├── docker-compose.yml
 ├── README.md
 └── README-zh-CN.md
 ```
@@ -444,9 +465,22 @@ USE_MOCK_LIPSYNC=true
 # 后端语法检查
 python3 -m compileall backend/app
 
+# 代码文件行数治理检查
+./scripts/check-code-file-lines.sh
+
+# 行数检查脚本自测
+./scripts/check-code-file-lines.sh --self-test
+
 # 前端生产构建
 cd frontend && npm run build
 ```
+
+## 代码文件规模治理
+
+- 业务源码文件默认不应超过 500 行；超过时应优先考虑按架构边界拆分，而不是继续堆在同一个文件里。
+- 500 行是架构提醒线，不是机械禁令。确实需要临时保留的大文件，必须写入 [scripts/code-file-line-exceptions.txt](./scripts/code-file-line-exceptions.txt)，并说明后续拆分方向。
+- CI 会运行 [scripts/check-code-file-lines.sh](./scripts/check-code-file-lines.sh)。被 Git 跟踪的业务源码如果超过 500 行且不在例外清单中，会导致检查失败。
+- 新代码优先拆成 router、service、schema、agent stage、component、composable、store、helper 等清晰边界，避免让单个文件无限增长。
 
 ## 说明
 
@@ -454,11 +488,12 @@ cd frontend && npm run build
 - 生成结果、本地素材库和运行数据默认已加入 Git 忽略。
 - 默认自动模式编排引擎是 `langgraph`；也可以通过 `PIPELINE_ENGINE=pipeline` 切到顺序执行器。
 - 当前默认的视频生成路径使用 `Seedance 1.5 Pro`；自动模式的“模型”下拉项可切换 `Seedance 2.0` 或 `Kling`，对应服务仍需在 `.env` 中配置 `ARK_API_KEY` 或 WaveSpeed/Kling API key。
-- 自动模式的“模型原声”默认关闭；开启后会让 Seedance 2.0 等视频模型生成自带声音，且在没有 TTS 配音时保留到最终成片。
+- 自动模式的时长、模型原声、系统配音、转场、BGM 和视频生成行为不再暴露为顶部按钮，统一由 `frontend/src/components/pipeline/AutoModeStudio.vue` 中的 `AUTO_PIPELINE_CODE_SWITCHES` 控制；默认关闭模型原声并开启 VidGen 系统配音。
 - 自动模式生成 skill 使用 `user_request` 表达创作目标，`narration_script/script` 只用于用户明确提供的最终口播文案。
 - 当前自动模式优先服务视频生成任务：当会话已选素材且用户明确要求生成 / 制作 / 输出视频时，ChatAgent 会直接启动 `generate_video`，并把原始用户消息作为 `user_request` 进入 pipeline；随后由 `OrchestratorAgent` 内部做需求理解和素材上下文整理。
 - `HUMAN_IN_LOOP_PROMPT_REVIEW=true` 时，普通生成默认会先停在镜头方案确认；如果只想直接生成，可在请求里显式传 `review_prompts=false` 或关闭全局配置。
 - `MEM0_ENABLED=true` 还需要 `QWEN_API_KEY` 和 `mem0ai` 依赖可用；初始化失败时系统会记录 warning 并退回无语义记忆模式。
+- 自动模式当前流程失败后，可在聊天框输入 `continue` / `retry` / `继续`，前端会调用失败 Agent 重试接口，从最近失败阶段继续执行；如果分镜视频已经生成，会复用已生成片段并继续补音频、剪辑和 QA。
 - 自动模式对话中的“中止对话”只中断当前 chat/SSE 与尚未完成的 tool 调用；已经创建的 `PipelineRun` 会继续在右侧执行状态中通过 pipeline SSE 更新，需要停止时再点“取消流程”。
 - 个人中心当前采用更偏 `capybara` 风格的角色工作台：其他预设角色以图标卡展示，右侧只展示当前选中角色的背景信息用于确认。
 - 角色关键词自动生成功能依赖后端 LLM；如果未配置真实模型，会回退到基于内置预设模板的本地生成逻辑。
@@ -474,5 +509,5 @@ cd frontend && npm run build
 - 若要在生产或容器环境中收集日志，建议把 `LOG_FORMAT` 设为 `json`，便于接入日志平台。
 
 ## License
-
+MIT
 在公开发布前，请补充你希望使用的开源协议。

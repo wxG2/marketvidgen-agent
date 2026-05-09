@@ -17,14 +17,18 @@
   FastAPI 应用入口。只保留 lifespan 壳、路由注册和静态文件挂载；具体服务 / Agent 装配已下沉到 `bootstrap.py`。
 - `bootstrap.py`
   应用装配层。负责 Mock/真实服务选择、Agent/执行器初始化、runtime skill 注册、Mem0 / AgentMemory 初始化、数据库启动恢复和 artifact 清理任务启动。
-- `http.py`
+- `core/http.py`
   FastAPI HTTP 横切配置。负责全局异常处理、CORS 和 Cookie Session 鉴权中间件。
-- `config.py`
+- `core/config.py`
   集中定义环境变量与运行配置，比如模型 key、目录路径、执行引擎、第三方平台配置。
-- `database.py`
+- `db/session.py`
   数据库引擎、`async_session`、`Base` 和初始化逻辑。
-- `auth.py`
+- `core/security.py`
   本地账号体系、Cookie Session、当前用户读取，以及按用户隔离资源的鉴权辅助函数。外部 `/v1` API 使用 `services/api_keys.py` 中的 Bearer API Key 依赖，不走 Cookie。
+- `core/`
+  应用级基础设施包，收纳配置、HTTP 横切逻辑、安全鉴权和结构化日志。
+- `db/`
+  数据库连接和 session 生命周期包。
 - `routers/`
   API 边界层。每个文件按业务域拆分，例如 `auto_sessions.py`、`pipeline.py`、`materials.py`、`social_accounts.py`、`public_video_jobs.py`。
 - `schemas/`

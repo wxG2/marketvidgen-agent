@@ -10,9 +10,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.agents.base import AgentContext, AgentResult, BaseAgent
-from app.auth import get_current_user
+from app.core.security import get_current_user
 from app.agents.pipeline import PipelineExecutor
-from app.database import Base, get_db
+from app.db.session import Base, get_db
 from app.models import *  # noqa: F401,F403
 from app.models.pipeline import AgentExecution, PipelineRun
 from app.models.user import User
@@ -303,6 +303,10 @@ async def test_pipeline_delivery_preview_and_save(pipeline_client, project_id, s
     assert preview_response.status_code == 200
     preview_payload = preview_response.json()
     assert {item["platform"] for item in preview_payload["previews"]} == {"douyin", "youtube"}
+
+    final_video_response = await client.get(f"/api/projects/{project_id}/pipeline/{run['id']}/final-video")
+    assert final_video_response.status_code == 200
+    assert final_video_response.content == b"fake-video"
 
     save_response = await client.post(f"/api/projects/{project_id}/pipeline/{run['id']}/delivery/save", json={})
     assert save_response.status_code == 200

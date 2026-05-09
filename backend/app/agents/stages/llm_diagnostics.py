@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.agents.core.base import describe_exception
-from app.services.qwen_client import (
+from app.services.llm.qwen_client import (
     QwenRequestError,
     QwenResponseParseError,
     QwenResponseValidationError,

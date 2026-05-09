@@ -93,13 +93,18 @@ class PipelineExecutorSupportMixin:
         prompt_plan = artifacts.get("prompt_plan", {})
         orchestrator_plan = artifacts.get("orchestrator_plan", {})
         duration_source = prompt_plan.get("shot_prompts") or orchestrator_plan.get("shots", [])
+        shot_durations = [
+            float(shot["duration_seconds"])
+            for shot in duration_source
+            if isinstance(shot, dict) and shot.get("duration_seconds") is not None
+        ]
         return {
             "video_clips": video_clips.get("video_clips", []),
             "audio_path": audio.get("audio_path", ""),
             "subtitle_path": audio.get("subtitle_path", ""),
             "shot_prompts": prompt_plan.get("shot_prompts", []),
             "duration_mode": input_config.get("duration_mode", "fixed"),
-            "shot_durations": [shot["duration_seconds"] for shot in duration_source],
+            "shot_durations": shot_durations,
             "transition": input_config.get("transition", "none"),
             "transition_duration": input_config.get("transition_duration", 0.5),
             "bgm_mood": input_config.get("bgm_mood", "none"),

@@ -24,8 +24,8 @@ from app.agents import (
     VideoGeneratorAgent,
 )
 from app.agents.skills import register_runtime_skills
-from app.config import settings
-from app.database import async_session, init_db
+from app.core.config import settings
+from app.db.session import async_session, init_db
 from app.models.pipeline import AgentExecution, PipelineRun
 from app.services.agent_memory import AgentMemoryService
 from app.services.artifact_cleanup import cleanup_old_artifacts, periodic_artifact_cleanup
@@ -37,7 +37,7 @@ from app.services.mem0_service import Mem0Service
 from app.services.rag_service import RagService
 from app.services.tts_service import MockTTSService, RealTTSService
 from app.services.video_analyzer import MockVideoAnalyzer, Qwen3VLAnalyzer
-from app.services.video_editor_service import MockVideoEditorService, RealVideoEditorService
+from app.services.video_editing.composer import MockVideoEditorService, RealVideoEditorService
 from app.services.video_generator import (
     Kling3Generator,
     MockVideoGenerator,

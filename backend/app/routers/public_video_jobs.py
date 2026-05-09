@@ -13,8 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from app.agents.stages.orchestrator import _snap_to_supported
-from app.config import settings
-from app.database import async_session, get_db
+from app.core.config import settings
+from app.db.session import async_session, get_db
 from app.models.pipeline import AgentExecution
 from app.routers.pipeline import (
     _build_replication_narration_script,

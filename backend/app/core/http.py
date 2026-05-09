@@ -9,9 +9,9 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.auth import get_current_user
-from app.config import settings
-from app.database import async_session
+from app.core.security import get_current_user
+from app.core.config import settings
+from app.db.session import async_session
 
 logger = structlog.get_logger(__name__)
 

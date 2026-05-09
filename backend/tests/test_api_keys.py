@@ -5,7 +5,7 @@ import uuid
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import hash_password
+from app.core.security import hash_password
 from app.models.user import User
 
 

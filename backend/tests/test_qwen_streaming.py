@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from app.services.qwen_client import QwenClient, QwenResponseParseError, QwenResponseValidationError
+from app.services.llm.qwen_client import QwenClient, QwenResponseParseError, QwenResponseValidationError
 
 
 class _FakeStreamResponse:
@@ -84,7 +84,7 @@ async def test_chat_stream_text_yields_sse_delta_content(monkeypatch):
     def _client_factory(*args, **kwargs):
         return _FakeAsyncClient(*args, lines=lines, payload_sink=payloads, **kwargs)
 
-    monkeypatch.setattr("app.services.qwen_client.httpx.AsyncClient", _client_factory)
+    monkeypatch.setattr("app.services.llm.transport.httpx.AsyncClient", _client_factory)
 
     client = QwenClient(api_key="test-key", base_url="https://example.com/v1", model="qwen3-omni-flash")
     chunks = [chunk async for chunk in client.chat_stream_text(messages=[{"role": "user", "content": "你好"}])]
@@ -110,7 +110,7 @@ async def test_collect_sse_response_aggregates_chunks_and_usage(monkeypatch):
     def _client_factory(*args, **kwargs):
         return _FakeAsyncClient(*args, lines=lines, payload_sink=payloads, **kwargs)
 
-    monkeypatch.setattr("app.services.qwen_client.httpx.AsyncClient", _client_factory)
+    monkeypatch.setattr("app.services.llm.transport.httpx.AsyncClient", _client_factory)
 
     client = QwenClient(api_key="test-key", base_url="https://example.com/v1", model="qwen3-omni-flash")
     text, usage = await client._collect_sse_response(
@@ -147,7 +147,7 @@ async def test_chat_json_omni_with_images_uses_streaming_no_json_schema(monkeypa
     def _client_factory(*args, **kwargs):
         return _FakeAsyncClient(*args, lines=lines, payload_sink=payloads, **kwargs)
 
-    monkeypatch.setattr("app.services.qwen_client.httpx.AsyncClient", _client_factory)
+    monkeypatch.setattr("app.services.llm.transport.httpx.AsyncClient", _client_factory)
 
     client = QwenClient(api_key="test-key", base_url="https://example.com/v1", model="qwen3-omni-flash")
     schema = {

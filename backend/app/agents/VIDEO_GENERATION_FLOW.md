@@ -622,7 +622,7 @@ artifacts["orchestrator_plan"]
 
 真实编辑服务 `RealVideoEditorService` 会：
 
-- 调 LLM 生成剪辑顺序 `ordered_indices`
+- 沿用导演方案 / `video_generator` 输出的 `shot_idx` 顺序，不再调用 LLM 重排片段
 - 下载或定位各片段
 - 用 ffmpeg 裁剪、转码、拼接或添加 xfade 转场
 - 对齐音频和视频长度

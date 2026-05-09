@@ -7,7 +7,7 @@ from typing import Literal
 
 from fastapi import HTTPException, UploadFile
 
-from app.config import settings
+from app.core.config import settings
 
 UploadKind = Literal["image", "video", "audio", "subtitle", "timeline_asset"]
 

@@ -12,7 +12,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.config import settings
+from app.core.config import settings
 from app.models.pipeline import PipelineRun
 from app.models.repository_asset import RepositoryAsset
 

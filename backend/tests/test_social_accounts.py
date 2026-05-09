@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlparse
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.core.config import settings
 from app.models.social_account import SocialAccount
 from app.models.user import User
 from app.services.social_accounts import ensure_active_douyin_account

@@ -7,7 +7,7 @@ from typing import Optional
 from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database import Base
+from app.db.session import Base
 
 
 class GeneratedVideo(Base):

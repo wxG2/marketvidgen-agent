@@ -65,7 +65,7 @@ Important entry points:
 
 - [backend/app/main.py](./backend/app/main.py)
 - [backend/app/agents/pipeline.py](./backend/app/agents/pipeline.py)
-- [backend/app/services/qwen_client.py](./backend/app/services/qwen_client.py)
+- [backend/app/services/llm/qwen_client.py](./backend/app/services/llm/qwen_client.py)
 
 ## Agent Pipeline
 
@@ -107,31 +107,61 @@ Relevant files:
 
 - [backend/app/services/llm_service.py](./backend/app/services/llm_service.py)
 - [backend/app/services/tts_service.py](./backend/app/services/tts_service.py)
-- [backend/app/services/video_generator.py](./backend/app/services/video_generator.py)
+- [backend/app/services/video_generation/router.py](./backend/app/services/video_generation/router.py)
 
 ## Project Structure
 
 ```text
 vidgen/
+├── .github/
+│   └── workflows/
 ├── backend/
+│   ├── alembic/
 │   ├── app/
 │   │   ├── agents/
+│   │   ├── core/
+│   │   ├── db/
+│   │   ├── mcp/
 │   │   ├── models/
 │   │   ├── prompts/
 │   │   ├── routers/
 │   │   ├── schemas/
-│   │   └── services/
+│   │   ├── services/
+│   │   │   ├── llm/
+│   │   │   ├── video_editing/
+│   │   │   └── video_generation/
+│   │   └── utils/
+│   ├── tests/
+│   ├── Dockerfile
+│   ├── alembic.ini
 │   ├── pyproject.toml
 │   ├── requirements.txt
-│   └── requirements-dev.txt
+│   ├── requirements-dev.txt
+│   └── uv.lock
+├── docs/
+│   ├── api/
+│   ├── architecture/
+│   ├── archive/
+│   ├── development/
+│   ├── plans/
+│   ├── portfolio/
+│   └── reports/
 ├── frontend/
+│   ├── public/
 │   ├── src/
 │   │   ├── api/
 │   │   ├── components/
+│   │   ├── composables/
+│   │   ├── lib/
 │   │   ├── stores/
 │   │   └── types/
+│   ├── Dockerfile
+│   ├── package.json
+│   └── vite.config.ts
 ├── scripts/
-└── README.md
+├── docker-compose.yml
+├── README.md
+└── README-zh-CN.md
 ```
 
 ## Local Setup
@@ -222,9 +252,22 @@ If provider keys are not configured, some services may fall back to mock impleme
 # backend syntax check
 python3 -m compileall backend/app
 
+# code file line guard
+./scripts/check-code-file-lines.sh
+
+# code file line guard self-test
+./scripts/check-code-file-lines.sh --self-test
+
 # frontend production build
 cd frontend && npm run build
 ```
+
+## Code Size Governance
+
+- Business source files should stay at or below 500 lines unless there is a clear reason not to split them yet.
+- The limit is an architecture warning line, not a mechanical ban. When a file needs a temporary exception, add it to [scripts/code-file-line-exceptions.txt](./scripts/code-file-line-exceptions.txt) with the intended extraction direction.
+- The CI guard runs [scripts/check-code-file-lines.sh](./scripts/check-code-file-lines.sh) and fails when a tracked business source file exceeds 500 lines without an exception.
+- New code should prefer clear boundaries such as routers, services, schemas, agents, composables, components, stores, and helpers instead of growing an existing file indefinitely.
 
 ## Notes
 

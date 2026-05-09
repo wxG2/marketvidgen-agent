@@ -10,7 +10,7 @@ from app.agents.stages.prompt_engineer import (
     _rhythmic_durations,
     PromptEngineerAgent,
 )
-from app.services.qwen_client import QwenClient
+from app.services.llm.qwen_client import QwenClient
 
 
 # ── _rhythmic_durations ────────────────────────────────────────────────────────
@@ -40,7 +40,7 @@ def test_rhythmic_durations_empty():
 
 def test_generation_duration_returns_smallest_gte(monkeypatch):
     """generation_duration_for must return the smallest supported value >= input."""
-    from app.config import settings
+    from app.core.config import settings
     monkeypatch.setattr(settings, "SEEDANCE_SUPPORTED_DURATIONS", [4, 5, 6, 7, 8, 9, 10])
     assert _generation_duration_for(2.5) == 4.0   # below min → smallest supported = 4
     assert _generation_duration_for(4.0) == 4.0   # exact match
@@ -50,7 +50,7 @@ def test_generation_duration_returns_smallest_gte(monkeypatch):
 
 def test_generation_duration_falls_back_to_max_when_too_large(monkeypatch):
     """If shot exceeds all supported durations, return max (caller should error)."""
-    from app.config import settings
+    from app.core.config import settings
     monkeypatch.setattr(settings, "SEEDANCE_SUPPORTED_DURATIONS", [4, 5, 10])
     result = _generation_duration_for(20.0)
     assert result == 10.0
@@ -58,7 +58,7 @@ def test_generation_duration_falls_back_to_max_when_too_large(monkeypatch):
 
 def test_generation_duration_covers_final_cut(monkeypatch):
     """generation_duration_for must always be >= the input (final-cut) duration."""
-    from app.config import settings
+    from app.core.config import settings
     monkeypatch.setattr(settings, "SEEDANCE_SUPPORTED_DURATIONS", [4, 5, 6, 7, 8, 9, 10])
     for dur in [1.0, 1.5, 3.0, 4.0, 7.3, 9.9, 10.0]:
         gen = _generation_duration_for(dur)
@@ -306,7 +306,7 @@ async def test_sse_partial_recovery_succeeds_when_complete_json_received(monkeyp
     def _client_factory(*args, **kwargs):
         return _ClientWithDrop(lines=lines, drop_after=1)  # drop after first data line
 
-    monkeypatch.setattr("app.services.qwen_client.httpx.AsyncClient", _client_factory)
+    monkeypatch.setattr("app.services.llm.transport.httpx.AsyncClient", _client_factory)
 
     client = QwenClient(api_key="k", base_url="https://example.com/v1", model="qwen3-omni-flash")
     text, usage = await client._collect_sse_response(
@@ -348,7 +348,7 @@ async def test_sse_partial_recovery_retries_when_json_incomplete(monkeypatch):
             # Second attempt: full response
             return _DropAfterNLines(good_lines, drop_after=len(good_lines) + 1)
 
-    monkeypatch.setattr("app.services.qwen_client.httpx.AsyncClient", lambda *a, **kw: _FailThenSucceed())
+    monkeypatch.setattr("app.services.llm.transport.httpx.AsyncClient", lambda *a, **kw: _FailThenSucceed())
 
     client = QwenClient(api_key="k", base_url="https://example.com/v1", model="qwen3-omni-flash")
     text, _ = await client._collect_sse_response(

@@ -13,6 +13,9 @@
 
 ## docs 分区
 
+- [guide/](./guide/)：本地开发、依赖管理、调试运行指南
+  - [Python 依赖管理](./guide/python-dependency-management.zh-CN.md)：pyproject.toml / requirements*.txt / uv.lock 职责与新增依赖流程
+  - [本地开发与调试](./guide/local-development-debugging.zh-CN.md)：环境准备、后端/前端启动、Docker Compose 联调、常用脚本
 - [architecture/](./architecture/)：系统级架构与能力全景
 - [api/](./api/)：第三方开发者 API 接入文档
 - [plans/](./plans/)：仍可能继续执行的方案或改造计划
@@ -23,4 +26,4 @@
 
 ## 阅读建议
 
-新同学或演示前优先读根目录 `README-zh-CN.md`，再按改动范围进入对应模块文档。`archive/` 中的文档默认不是当前事实来源，引用其中结论前需要回到代码或当前 README 核对。
+新同学或演示前优先读根目录 `README-zh-CN.md`，再看 `guide/` 下的本地开发指南跑通环境，最后按改动范围进入对应模块文档。`archive/` 中的文档默认不是当前事实来源，引用其中结论前需要回到代码或当前 README 核对。

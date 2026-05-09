@@ -15,7 +15,7 @@ import pytest
 
 def test_generation_duration_not_forced_to_five(monkeypatch):
     """generation_duration_for must return smallest-supported >= input, not nearest."""
-    from app.config import settings
+    from app.core.config import settings
     monkeypatch.setattr(settings, "SEEDANCE_SUPPORTED_DURATIONS", [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
     monkeypatch.setattr(settings, "VIDEO_GEN_MIN_DURATION_SECONDS", 4.0)
     monkeypatch.setattr(settings, "VIDEO_GEN_MAX_DURATION_SECONDS", 15.0)
@@ -31,7 +31,7 @@ def test_generation_duration_not_forced_to_five(monkeypatch):
 def test_full_supported_range_does_not_snap_all_to_five(monkeypatch):
     """Verify that with a full range config, different shot durations yield
     distinct generation_duration_seconds — previously all would collapse to 5."""
-    from app.config import settings
+    from app.core.config import settings
     monkeypatch.setattr(settings, "SEEDANCE_SUPPORTED_DURATIONS", [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
     monkeypatch.setattr(settings, "VIDEO_GEN_MIN_DURATION_SECONDS", 4.0)
     monkeypatch.setattr(settings, "VIDEO_GEN_MAX_DURATION_SECONDS", 15.0)
@@ -54,7 +54,7 @@ async def test_video_generator_progress_shows_both_durations(monkeypatch):
     """Progress text must include both generation duration and final-cut duration."""
     from app.services.video_generator import GenerationStatus, GenerationTask, VideoGenerator
     from app.agents.stages.video_generator import VideoGeneratorAgent
-    from app.config import settings
+    from app.core.config import settings
     monkeypatch.setattr(settings, "SEEDANCE_SUPPORTED_DURATIONS", [4, 5, 6, 7, 8, 9, 10])
     monkeypatch.setattr(settings, "MAX_CONCURRENT_SHOTS", 2)
     monkeypatch.setattr(settings, "VIDEO_GENERATION_TIMEOUT_SECONDS", 10)
@@ -103,7 +103,7 @@ async def test_video_generator_returns_generation_duration_seconds(monkeypatch):
     """Returned clip dict must include both duration_seconds and generation_duration_seconds."""
     from app.services.video_generator import GenerationStatus, GenerationTask, VideoGenerator
     from app.agents.stages.video_generator import VideoGeneratorAgent
-    from app.config import settings
+    from app.core.config import settings
     monkeypatch.setattr(settings, "SEEDANCE_SUPPORTED_DURATIONS", [4, 5, 6, 7, 8, 9, 10])
     monkeypatch.setattr(settings, "MAX_CONCURRENT_SHOTS", 2)
     monkeypatch.setattr(settings, "VIDEO_GENERATION_TIMEOUT_SECONDS", 10)
@@ -142,22 +142,20 @@ async def test_video_generator_returns_generation_duration_seconds(monkeypatch):
     assert result["generation_duration_seconds"] == 4.0   # generation tracked
 
 
-# ── 3. video_editor works without LLM in no-audio/no-subtitle path ───────────
+# ── 3. video_editor always follows director shot order ───────────────────────
 
 @pytest.mark.asyncio
-async def test_video_editor_no_audio_skips_llm(monkeypatch):
-    """In no-audio mode (no subtitle_path), video_editor must NOT call LLM,
-    use default clip order, and still trim clips to duration_seconds."""
+async def test_video_editor_always_uses_sequential_order(monkeypatch):
+    """Video editor must follow director/generator shot order even with subtitles."""
     import os
     import tempfile
-    from app.services.video_editor_service import RealVideoEditorService
-
-    llm_called = []
+    from app.services.video_editing.composer import RealVideoEditorService
 
     class _ShouldNotBeCalled:
         async def generate_structured(self, **kwargs):
-            llm_called.append(True)
-            raise AssertionError("LLM should not be called in no-audio mode")
+            raise AssertionError("video_editor must not call LLM for clip ordering")
+
+    clip_process_commands = []
 
     # Fake ffmpeg / ffprobe that just copies the file and reports duration
     async def _fake_run(*args, **kwargs):
@@ -166,12 +164,14 @@ async def test_video_editor_no_audio_skips_llm(monkeypatch):
         if "-i" in cmd:
             in_idx = cmd.index("-i") + 1
             out = cmd[-1]
+            if os.path.basename(out).startswith("clip_") and out.endswith(".mp4"):
+                clip_process_commands.append(cmd)
             if os.path.exists(cmd[in_idx]) and out.endswith(".mp4"):
                 with open(out, "wb") as f:
                     f.write(b"\x00" * 512)
         return 0, "5.0", ""
 
-    monkeypatch.setattr("app.services.video_editor_service.run_subprocess", _fake_run, raising=False)
+    monkeypatch.setattr("app.services.video_editing.composer.run_subprocess", _fake_run, raising=False)
 
     # Create fake clip files
     tmpdir = tempfile.mkdtemp()
@@ -183,6 +183,13 @@ async def test_video_editor_no_audio_skips_llm(monkeypatch):
         clips.append(p)
 
     output_path = os.path.join(tmpdir, "out.mp4")
+    subtitle_path = os.path.join(tmpdir, "subtitles.srt")
+    with open(subtitle_path, "w", encoding="utf-8") as f:
+        f.write(
+            "1\n00:00:00,000 --> 00:00:02,500\nfirst\n\n"
+            "2\n00:00:02,500 --> 00:00:05,000\nsecond\n\n"
+            "3\n00:00:05,000 --> 00:00:07,500\nthird\n"
+        )
 
     svc = RealVideoEditorService(llm_service=_ShouldNotBeCalled(), ffmpeg_bin="ffmpeg")
 
@@ -190,7 +197,7 @@ async def test_video_editor_no_audio_skips_llm(monkeypatch):
     async def _noop_ensure(path, workdir=None):
         return path
 
-    monkeypatch.setattr("app.services.video_editor_service.ensure_local_file", _noop_ensure, raising=False)
+    monkeypatch.setattr("app.services.video_editing.composer.ensure_local_file", _noop_ensure, raising=False)
     monkeypatch.setattr("app.services.media_utils.run_subprocess", _fake_run, raising=False)
 
     context_data = {
@@ -198,7 +205,7 @@ async def test_video_editor_no_audio_skips_llm(monkeypatch):
             {"shot_idx": i, "duration_seconds": 2.5} for i in range(3)
         ],
         "shot_prompts": [{"video_prompt": f"p{i}", "script_segment": f"s{i}"} for i in range(3)],
-        "duration_mode": "fixed",
+        "duration_mode": "auto",
         "shot_durations": [2.5, 2.5, 2.5],
         "transition": "none",
         "bgm_mood": "none",
@@ -206,17 +213,95 @@ async def test_video_editor_no_audio_skips_llm(monkeypatch):
 
     result = await svc.compose(
         video_clips=clips,
-        audio_path="",    # no audio
-        subtitle_path="", # no subtitles
+        audio_path="",
+        subtitle_path=subtitle_path,
         output_path=output_path,
         context_data=context_data,
     )
 
-    assert not llm_called, "LLM was invoked despite no-audio/no-subtitle path"
     assert result.output_path == output_path
+    assert len(clip_process_commands) == 3
+    assert [
+        os.path.basename(cmd[cmd.index("-i") + 1])
+        for cmd in clip_process_commands
+    ] == ["clip_0.mp4", "clip_1.mp4", "clip_2.mp4"]
+    assert all("-t" in cmd and cmd[cmd.index("-t") + 1] == "2.50" for cmd in clip_process_commands)
 
 
-# ── 4. director plan message persisted after prompt_engineer completes ────────
+# ── 4. langgraph retry continues after failed audio without regenerating video ─
+
+@pytest.mark.asyncio
+async def test_langgraph_audio_retry_reuses_existing_video_clips(monkeypatch):
+    """retry-agent on audio_subtitle should reuse completed video_generator output."""
+    from app.agents.core.base import AgentResult
+    from app.agents.executors.langgraph.nodes import LangGraphPipelineNodeMixin
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "QA_REVIEW_ENABLED", False)
+
+    class _Context:
+        trace_id = "trace-test"
+        pipeline_run_id = "run-test"
+
+        def __init__(self):
+            self.artifacts = {
+                "audio": {"audio_path": "retried.mp3"},
+                "video_clips": {"video_clips": ["already-generated.mp4"]},
+            }
+            self.saved = 0
+
+        async def save_checkpoint(self):
+            self.saved += 1
+
+    class _Agent:
+        def __init__(self, output):
+            self.output = output
+            self.calls = 0
+
+        async def run(self, context, input_data):
+            self.calls += 1
+            return AgentResult(success=True, output_data=self.output)
+
+    class _Executor(LangGraphPipelineNodeMixin):
+        def __init__(self):
+            self.audio_agent = _Agent({"audio_path": "new.mp3"})
+            self.video_gen_agent = _Agent({"video_clips": ["new.mp4"]})
+            self.video_editor = _Agent({"final_video_path": "final.mp4"})
+            self.qa_reviewer = None
+
+        def get_agent_map(self):
+            return {
+                "audio_subtitle": self.audio_agent,
+                "video_generator": self.video_gen_agent,
+                "video_editor": self.video_editor,
+            }
+
+        @staticmethod
+        def get_agent_to_artifact_key():
+            return {
+                "audio_subtitle": "audio",
+                "video_generator": "video_clips",
+                "video_editor": "final_video",
+            }
+
+        def build_agent_input(self, agent_name, artifacts, input_config):
+            return {"agent_name": agent_name, "artifacts": artifacts, **input_config}
+
+        async def _update_run(self, *args, **kwargs):
+            return None
+
+    context = _Context()
+    executor = _Executor()
+
+    result = await executor.continue_from_retry(context, "audio_subtitle", {})
+
+    assert executor.video_gen_agent.calls == 0
+    assert executor.video_editor.calls == 1
+    assert result == {"final_video_path": "final.mp4"}
+    assert context.artifacts["video_clips"] == {"video_clips": ["already-generated.mp4"]}
+
+
+# ── 5. director plan message persisted after prompt_engineer completes ────────
 
 @pytest.mark.asyncio
 async def test_director_plan_message_persisted_after_prompt_engineer(tmp_path):

@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     # Per-shot video generation polling timeout (seconds). 600 = 10 min.
     VIDEO_GENERATION_TIMEOUT_SECONDS: int = 600
     # Max concurrent shot generation tasks (prevents API rate-limit hammering).
-    MAX_CONCURRENT_SHOTS: int = 1
+    MAX_CONCURRENT_SHOTS: int = 2
     # Retry transient transport failures from external image-to-video APIs.
     VIDEO_GENERATION_HTTP_RETRIES: int = 2
     VIDEO_GENERATION_HTTP_RETRY_BACKOFF_SECONDS: float = 2.0

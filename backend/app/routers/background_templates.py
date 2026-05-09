@@ -6,8 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import compile_background_template, get_background_template_for_user, get_current_user
-from app.database import get_db
+from app.core.security import compile_background_template, get_background_template_for_user, get_current_user
+from app.db.session import get_db
 from app.models.background_template import BackgroundTemplate, BackgroundTemplateLearningLog
 from app.models.user import User
 from app.schemas.background_template import (

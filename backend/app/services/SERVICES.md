@@ -16,9 +16,11 @@ LLM 调用的统一抽象层。
 - `RealLLMService`：调用 Claude（Anthropic）、通义千问等实际模型，根据配置路由
 - `MockLLMService`：返回固定内容，用于本地开发和单元测试
 
-### `qwen_client.py`
+### `llm/qwen_client.py`
 
 通义千问 API 的底层 HTTP 客户端封装，处理认证、重试和响应解析，供 `RealLLMService` 调用。
+
+同目录下的 `transport.py`、`payloads.py`、`errors.py` 分别负责 HTTP 传输、请求/响应 payload 工具和错误映射。
 
 ### `tts_service.py`
 
@@ -40,7 +42,7 @@ LLM 调用的统一抽象层。
 
 ## 视频处理
 
-### `video_generator.py`
+### `video_generation/`
 
 AI 视频生成服务，对接外部图生视频 API。
 
@@ -48,8 +50,9 @@ AI 视频生成服务，对接外部图生视频 API。
 - `Kling3Generator`：对接可灵（Kling）API
 - `SeedanceGenerator`：对接 Seedance API
 - `VideoGeneratorRouter`：根据配置（`VIDEO_GENERATOR` 环境变量）将任务路由到具体实现，支持多后端共存
+- `services/video_generator.py` 仅保留兼容导出，新增实现优先放入 `video_generation/`
 
-### `video_editor_service.py`
+### `video_editing/composer.py`
 
 本地视频剪辑合成服务，基于 FFmpeg 实现。
 
@@ -60,6 +63,7 @@ AI 视频生成服务，对接外部图生视频 API。
   - BGM 混音（按情绪关键词匹配内置 BGM 文件）
   - 视频静音处理
 - `MockVideoEditorService`：直接返回第一个输入文件作为结果
+- `video_editing/helpers.py`：字幕对齐、转场选择和辅助计算
 
 ### `image_compositor.py`
 

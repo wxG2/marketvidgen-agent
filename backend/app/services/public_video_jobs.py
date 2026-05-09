@@ -11,7 +11,7 @@ from fastapi import HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.core.config import settings
 from app.models.external_video_job import ExternalVideoJob
 from app.models.pipeline import AgentExecution, PipelineRun
 from app.models.project import Project

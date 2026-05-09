@@ -95,10 +95,18 @@ def _format_director_plan_text(shot_prompts: list[dict], voice_design: dict, dir
         idx = shot.get("shot_idx", "?")
         dur = shot.get("duration_seconds", "?")
         range_label = shot.get("duration_range_label", "")
+        source_idx = shot.get("source_image_idx")
+        sequence_role = str(shot.get("sequence_role") or "").strip()
+        sequence_reason = str(shot.get("sequence_reason") or shot.get("shot_purpose") or "").strip()
         script = shot.get("script_segment", "").strip()
         prompt = shot.get("video_prompt", "").strip()
         dur_display = f"{range_label}（建议 {dur}s）" if range_label else f"{dur}s"
         lines.append(f"### 镜头 {idx + 1}（{dur_display}）")
+        if source_idx is not None or sequence_role:
+            source_display = f"素材 {int(source_idx) + 1}" if isinstance(source_idx, int) else f"素材 {source_idx}"
+            lines.append(f"**排序**：{source_display if source_idx is not None else ''} {sequence_role}".strip())
+        if sequence_reason:
+            lines.append(f"**排序理由**：{sequence_reason}")
         if script:
             lines.append(f"**旁白**：{script}")
         if prompt:

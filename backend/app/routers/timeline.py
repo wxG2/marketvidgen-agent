@@ -8,9 +8,9 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user, get_project_for_user
-from app.config import settings
-from app.database import get_db
+from app.core.security import get_current_user, get_project_for_user
+from app.core.config import settings
+from app.db.session import get_db
 from app.models.timeline import TimelineClip, TimelineAsset
 from app.models.generated_video import GeneratedVideo
 from app.models.user import User

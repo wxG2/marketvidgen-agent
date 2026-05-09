@@ -6,7 +6,7 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from app.services.qwen_client import QwenClient
+from app.services.llm.qwen_client import QwenClient
 
 
 @dataclass

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import (
+from app.core.security import (
     adopt_orphaned_records,
     clear_session_cookie,
     count_users,
@@ -14,7 +14,7 @@ from app.auth import (
     require_admin,
     verify_password,
 )
-from app.database import get_db
+from app.db.session import get_db
 from app.models.user import User, UserSession
 from app.schemas.auth import AdminUserUpdateRequest, AuthUserResponse, LoginRequest, RegisterRequest
 

@@ -193,6 +193,7 @@
 | GET | `/api/projects/{project_id}/pipeline/{run_id}/artifacts` | 获取本次运行已入仓的提示词、音频、字幕和分镜视频等中间产物 |
 | GET | `/api/projects/{project_id}/pipeline/{run_id}/usage` | 获取本次运行的 token 用量 |
 | GET | `/api/projects/{project_id}/pipeline/{run_id}/delivery` | 获取视频投递状态 |
+| GET | `/api/projects/{project_id}/pipeline/{run_id}/final-video` | 鉴权读取 pipeline 最终成片文件，用于前端直接预览 |
 | POST | `/api/projects/{project_id}/pipeline/{run_id}/delivery/save` | 将生成视频保存到本地仓库 |
 | POST | `/api/projects/{project_id}/pipeline/{run_id}/delivery/publish-douyin` | 发布视频到抖音 |
 | GET | `/api/projects/{project_id}/pipeline/{run_id}/stream` | SSE 流式获取 pipeline 进度事件 |

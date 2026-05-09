@@ -4,134 +4,26 @@ import logging
 
 from app.agents.core.base import AgentContext, AgentResult, BaseAgent, describe_exception
 from app.agents.stages.llm_diagnostics import llm_failure_label, short_error
-from app.config import settings
+from app.agents.stages.prompt_engineer_utils import (
+    as_str,
+    duration_range_label,
+    generation_duration_for,
+    normalize_total_duration,
+    rhythmic_durations,
+    snap_to_half_second,
+)
+from app.core.config import settings
 from app.prompts import PROMPT_ENGINEER_SYSTEM_PROMPT
 from app.services.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 
-# Visual-role → relative duration weight for rhythm-based fallback.
-# Weights are normalised against the target total, so they only affect ratios.
-_ROLE_DURATION_WEIGHTS: dict[str, float] = {
-    "brand_identity": 0.65,   # logo / hook → keep tight
-    "hook": 0.65,
-    "product_hero": 1.30,     # product showcase → give it room
-    "lifestyle_scene": 1.20,  # contextual lifestyle → slightly longer
-    "cta_moment": 0.80,       # call-to-action → medium
-    "testimonial": 1.00,
-    "social_proof": 0.90,
-}
-_DEFAULT_WEIGHT = 1.0
-
-
-def _generation_duration_for(duration_seconds: float) -> float:
-    """Return the smallest model-supported generation duration that is >= duration_seconds.
-
-    ``duration_seconds`` is the final-cut presentation time chosen by the director.
-    The generation model must produce at least this many seconds so the editor can
-    trim to the exact target.  If all supported durations are smaller than the
-    target (i.e. the shot is longer than the model can produce), return the maximum
-    supported duration so the caller can decide whether to fail loudly.
-    """
-    supported = settings.SEEDANCE_SUPPORTED_DURATIONS
-    candidates = [d for d in supported if d >= duration_seconds]
-    if candidates:
-        return float(min(candidates))
-    return float(max(supported))
-
-
-def _snap_to_half_second(value: float, min_dur: float = 1.0) -> float:
-    """Snap *value* to 0.5 s granularity and enforce *min_dur*."""
-    snapped = round(float(value) * 2) / 2
-    return max(min_dur, snapped)
-
-
-def _duration_range_label(duration_seconds: float) -> str:
-    """Return a human-readable pacing bucket label for *duration_seconds*."""
-    if duration_seconds < 2.0:
-        return "1-2s"
-    elif duration_seconds < 6.0:
-        return "2-6s"
-    else:
-        return "6-10s"
-
-
-def _rhythmic_durations(
-    visual_roles: list[str],
-    target: float,
-    min_dur: float = 1.0,
-) -> list[float]:
-    """Distribute *target* seconds across shots proportionally by visual role.
-
-    Each shot gets at least *min_dur* seconds. The returned list always sums
-    to exactly *target* (within floating-point precision).
-    """
-    n = len(visual_roles)
-    if n == 0:
-        return []
-    weights = [_ROLE_DURATION_WEIGHTS.get(r, _DEFAULT_WEIGHT) for r in visual_roles]
-    total_weight = sum(weights)
-    raw = [target * w / total_weight for w in weights]
-    # Enforce minimum per shot
-    clamped = [max(min_dur, r) for r in raw]
-    # Re-scale to match target exactly
-    scale = target / sum(clamped) if sum(clamped) > 0 else 1.0
-    durations = [round(d * scale, 1) for d in clamped]
-    # Absorb floating-point residue into the longest shot
-    diff = round(target - sum(durations), 1)
-    if abs(diff) >= 0.05:
-        longest = max(range(n), key=lambda i: durations[i])
-        durations[longest] = round(durations[longest] + diff, 1)
-    return durations
-
-
-def _normalize_total_duration(
-    shot_prompts: list[dict],
-    target_duration: float,
-) -> list[dict]:
-    """Adjust shot durations so their sum equals *target_duration*.
-
-    Only the final shot (or the longest, if the final cannot absorb the delta)
-    is modified so the director's intended pacing is preserved.
-    """
-    if not shot_prompts or target_duration <= 0:
-        return shot_prompts
-
-    total = sum(s.get("duration_seconds", 0.0) for s in shot_prompts)
-    delta = round(target_duration - total, 2)
-    if abs(delta) < 0.05:
-        return shot_prompts
-
-    result = [dict(s) for s in shot_prompts]
-
-    # Try last shot first
-    last = result[-1]
-    new_dur = _snap_to_half_second(last["duration_seconds"] + delta)
-    if new_dur >= 1.0:
-        last["duration_seconds"] = new_dur
-        last["generation_duration_seconds"] = _generation_duration_for(new_dur)
-        return result
-
-    # Fall back to longest shot
-    longest_idx = max(range(len(result)), key=lambda i: result[i].get("duration_seconds", 0.0))
-    new_dur = _snap_to_half_second(result[longest_idx]["duration_seconds"] + delta)
-    if new_dur >= 1.0:
-        result[longest_idx]["duration_seconds"] = new_dur
-        result[longest_idx]["generation_duration_seconds"] = _generation_duration_for(new_dur)
-        return result
-
-    # Proportional fallback (shouldn't normally reach here)
-    scale = target_duration / total if total > 0 else 1.0
-    for s in result:
-        s["duration_seconds"] = _snap_to_half_second(s["duration_seconds"] * scale)
-        s["generation_duration_seconds"] = _generation_duration_for(s["duration_seconds"])
-    return result
-
-
-def _as_str(value: object) -> str:
-    if value is None:
-        return ""
-    return str(value) if not isinstance(value, str) else value
+_generation_duration_for = generation_duration_for
+_snap_to_half_second = snap_to_half_second
+_duration_range_label = duration_range_label
+_rhythmic_durations = rhythmic_durations
+_normalize_total_duration = normalize_total_duration
+_as_str = as_str
 
 
 class PromptEngineerAgent(BaseAgent):
@@ -157,18 +49,18 @@ class PromptEngineerAgent(BaseAgent):
         # Replication path: pre-existing shots from ReplicationPlannerAgent
         existing_shots: list[dict] | None = input_data.get("shots") if input_data.get("shots") else None
 
-        creative_brief: str = _as_str(input_data.get("creative_brief") or input_data.get("user_request")).strip()
-        explicit_script: str = _as_str(input_data.get("explicit_script") or input_data.get("script")).strip()
-        platform: str = _as_str(input_data.get("platform") or "generic").strip()
-        style: str = _as_str(input_data.get("style") or "commercial").strip()
-        video_type: str = _as_str(input_data.get("video_type") or "commercial").strip()
-        background_context: str = _as_str(input_data.get("background_context")).strip()
+        creative_brief: str = as_str(input_data.get("creative_brief") or input_data.get("user_request")).strip()
+        explicit_script: str = as_str(input_data.get("explicit_script") or input_data.get("script")).strip()
+        platform: str = as_str(input_data.get("platform") or "generic").strip()
+        style: str = as_str(input_data.get("style") or "commercial").strip()
+        video_type: str = as_str(input_data.get("video_type") or "commercial").strip()
+        background_context: str = as_str(input_data.get("background_context")).strip()
         target_duration_raw = input_data.get("target_duration_seconds") or input_data.get("duration_seconds")
         try:
             target_duration: float | None = float(target_duration_raw) if target_duration_raw is not None else None
         except (TypeError, ValueError):
             target_duration = None
-        duration_mode: str = _as_str(input_data.get("duration_mode") or "fixed").strip()
+        duration_mode: str = as_str(input_data.get("duration_mode") or "fixed").strip()
         voice_config: dict = input_data.get("voice_config") or {}
 
         # ── Build image list and paths for multimodal call ─────────────────
@@ -208,6 +100,8 @@ class PromptEngineerAgent(BaseAgent):
                             "properties": {
                                 "shot_idx": {"type": "integer"},
                                 "source_image_idx": {"type": "integer"},
+                                "sequence_role": {"type": "string"},
+                                "sequence_reason": {"type": "string"},
                                 "shot_purpose": {"type": "string"},
                                 "script_segment": {"type": "string"},
                                 "duration_seconds": {"type": "number"},
@@ -216,6 +110,7 @@ class PromptEngineerAgent(BaseAgent):
                             },
                             "required": [
                                 "shot_idx", "source_image_idx",
+                                "sequence_role", "sequence_reason",
                                 "script_segment", "duration_seconds", "video_prompt",
                             ],
                         },
@@ -247,8 +142,8 @@ class PromptEngineerAgent(BaseAgent):
             # Normal path: image inventory with role context
             image_lines = []
             for i, img in enumerate(source_images):
-                content = _as_str(img.get("image_content") or img.get("summary")).strip()
-                role = _as_str(img.get("visual_role") or img.get("marketing_angle")).strip()
+                content = as_str(img.get("image_content") or img.get("summary")).strip()
+                role = as_str(img.get("visual_role") or img.get("marketing_angle")).strip()
                 subjects = ", ".join(img.get("key_subjects") or [])
                 line = f"素材 {i}: {content or '(未描述)'}"
                 if role:
@@ -279,6 +174,10 @@ class PromptEngineerAgent(BaseAgent):
             + (f"## 背景信息\n{background_context}\n\n" if background_context else "")
             + "## 约束\n"
             + f"- 平台: {platform} | 风格: {style} | 视频类型: {video_type}\n"
+            + "- 普通生成时，shot_idx 是最终成片时间线位置；source_image_idx 是素材库索引。\n"
+            + "- 必须主动根据营销叙事重排素材，不要机械使用 source_image_idx=shot_idx。\n"
+            + "- 每个镜头必须给出 sequence_role（hook/problem_or_scene/core_value/proof_or_detail/result_or_lifestyle/cta）和 sequence_reason。\n"
+            + "- 每张素材至少使用一次；如需要强调核心卖点，可以重复使用最关键素材。\n"
             + duration_hint
             + constraint_block
         )
@@ -298,10 +197,10 @@ class PromptEngineerAgent(BaseAgent):
 
             llm_shots: list[dict] = llm_output.get("shots", [])
             voice_design: dict = llm_output.get("voice_design") or {}
-            director_summary = _as_str(llm_output.get("director_summary")).strip()
-            creative_concept = _as_str(llm_output.get("creative_concept")).strip()
-            pacing_strategy = _as_str(llm_output.get("pacing_strategy")).strip()
-            narration_script = _as_str(llm_output.get("narration_script")).strip()
+            director_summary = as_str(llm_output.get("director_summary")).strip()
+            creative_concept = as_str(llm_output.get("creative_concept")).strip()
+            pacing_strategy = as_str(llm_output.get("pacing_strategy")).strip()
+            narration_script = as_str(llm_output.get("narration_script")).strip()
 
             usage_records.append({
                 "provider": "qwen",
@@ -338,7 +237,7 @@ class PromptEngineerAgent(BaseAgent):
 
         # ── Normalize total duration ───────────────────────────────────────
         if target_duration:
-            shot_prompts = _normalize_total_duration(shot_prompts, target_duration)
+            shot_prompts = normalize_total_duration(shot_prompts, target_duration)
 
         # ── Voice params ───────────────────────────────────────────────────
         voice_params = self._build_voice_params(voice_design, video_type, style, voice_config)
@@ -389,14 +288,14 @@ class PromptEngineerAgent(BaseAgent):
         for base in base_shots:
             src_idx = int(base.get("source_image_idx", base.get("shot_idx", 0)))
             if source_images and src_idx < len(source_images):
-                role = _as_str(source_images[src_idx].get("visual_role")).strip()
+                role = as_str(source_images[src_idx].get("visual_role")).strip()
             else:
-                role = _as_str(base.get("visual_role")).strip()
+                role = as_str(base.get("visual_role")).strip()
             visual_roles.append(role)
 
         fallback_dur: list[float] = []
         if target_duration and base_shots:
-            fallback_dur = _rhythmic_durations(visual_roles, target_duration)
+            fallback_dur = rhythmic_durations(visual_roles, target_duration)
         default_per_shot = float(settings.SEEDANCE_DURATION)
 
         shot_prompts = []
@@ -410,13 +309,13 @@ class PromptEngineerAgent(BaseAgent):
             if source_images and src_idx < len(source_images):
                 source_img = source_images[src_idx]
                 image_path = source_img["image_path"]
-                image_content = _as_str(source_img.get("image_content") or source_img.get("summary"))
+                image_content = as_str(source_img.get("image_content") or source_img.get("summary"))
             else:
-                image_path = _as_str(base.get("image_path"))
-                image_content = _as_str(base.get("image_content"))
+                image_path = as_str(base.get("image_path"))
+                image_content = as_str(base.get("image_content"))
                 source_img = base
 
-            script_segment = _as_str(
+            script_segment = as_str(
                 llm_shot.get("script_segment") or base.get("script_segment")
             ).strip()
 
@@ -424,15 +323,15 @@ class PromptEngineerAgent(BaseAgent):
             llm_dur_raw = llm_shot.get("duration_seconds") or base.get("duration_seconds")
             if llm_dur_raw is not None:
                 try:
-                    duration_seconds = _snap_to_half_second(float(llm_dur_raw))
+                    duration_seconds = snap_to_half_second(float(llm_dur_raw))
                 except (TypeError, ValueError):
                     duration_seconds = fallback_dur[i] if i < len(fallback_dur) else default_per_shot
             else:
                 duration_seconds = fallback_dur[i] if i < len(fallback_dur) else default_per_shot
 
-            generation_duration_seconds = _generation_duration_for(duration_seconds)
+            generation_duration_seconds = generation_duration_for(duration_seconds)
 
-            video_prompt = _as_str(
+            video_prompt = as_str(
                 llm_shot.get("video_prompt") or base.get("visual_design")
             ).strip()
             if not video_prompt:
@@ -447,15 +346,22 @@ class PromptEngineerAgent(BaseAgent):
             shot_prompts.append({
                 "shot_idx": idx,
                 "source_image_idx": src_idx,
+                "sequence_role": as_str(
+                    llm_shot.get("sequence_role") or self._fallback_sequence_role(i, len(base_shots))
+                ).strip(),
+                "sequence_reason": as_str(
+                    llm_shot.get("sequence_reason") or llm_shot.get("shot_purpose")
+                    or self._fallback_sequence_reason(i, len(base_shots), source_img)
+                ).strip(),
                 "image_path": image_path,
                 "image_content": image_content,
                 "source_image": source_img,
-                "shot_purpose": _as_str(llm_shot.get("shot_purpose")).strip(),
+                "shot_purpose": as_str(llm_shot.get("shot_purpose")).strip(),
                 "script_segment": script_segment,
                 "duration_seconds": duration_seconds,
-                "duration_range_label": _duration_range_label(duration_seconds),
+                "duration_range_label": duration_range_label(duration_seconds),
                 "generation_duration_seconds": generation_duration_seconds,
-                "camera_movement": _as_str(llm_shot.get("camera_movement")).strip(),
+                "camera_movement": as_str(llm_shot.get("camera_movement")).strip(),
                 "video_prompt": video_prompt,
             })
 
@@ -468,15 +374,15 @@ class PromptEngineerAgent(BaseAgent):
                 src_idx = max(0, min(src_idx, len(source_images) - 1)) if source_images else 0
                 source_img = source_images[src_idx] if source_images else {}
                 try:
-                    duration_seconds = _snap_to_half_second(
+                    duration_seconds = snap_to_half_second(
                         float(llm_shot.get("duration_seconds") or default_per_shot)
                     )
                 except (TypeError, ValueError):
                     duration_seconds = default_per_shot
-                generation_duration_seconds = _generation_duration_for(duration_seconds)
-                video_prompt = _as_str(llm_shot.get("video_prompt")).strip() or self._fallback_prompt(
+                generation_duration_seconds = generation_duration_for(duration_seconds)
+                video_prompt = as_str(llm_shot.get("video_prompt")).strip() or self._fallback_prompt(
                     shot_idx=idx,
-                    image_content=_as_str(source_img.get("image_content")),
+                    image_content=as_str(source_img.get("image_content")),
                     style=style,
                     video_type=video_type,
                     duration=duration_seconds,
@@ -484,19 +390,49 @@ class PromptEngineerAgent(BaseAgent):
                 shot_prompts.append({
                     "shot_idx": idx,
                     "source_image_idx": src_idx,
+                    "sequence_role": as_str(
+                        llm_shot.get("sequence_role") or self._fallback_sequence_role(len(shot_prompts), len(base_shots) + 1)
+                    ).strip(),
+                    "sequence_reason": as_str(
+                        llm_shot.get("sequence_reason") or llm_shot.get("shot_purpose")
+                        or self._fallback_sequence_reason(len(shot_prompts), len(base_shots) + 1, source_img)
+                    ).strip(),
                     "image_path": source_img.get("image_path", ""),
-                    "image_content": _as_str(source_img.get("image_content")),
+                    "image_content": as_str(source_img.get("image_content")),
                     "source_image": source_img,
-                    "shot_purpose": _as_str(llm_shot.get("shot_purpose")).strip(),
-                    "script_segment": _as_str(llm_shot.get("script_segment")).strip(),
+                    "shot_purpose": as_str(llm_shot.get("shot_purpose")).strip(),
+                    "script_segment": as_str(llm_shot.get("script_segment")).strip(),
                     "duration_seconds": duration_seconds,
-                    "duration_range_label": _duration_range_label(duration_seconds),
+                    "duration_range_label": duration_range_label(duration_seconds),
                     "generation_duration_seconds": generation_duration_seconds,
-                    "camera_movement": _as_str(llm_shot.get("camera_movement")).strip(),
+                    "camera_movement": as_str(llm_shot.get("camera_movement")).strip(),
                     "video_prompt": video_prompt,
                 })
 
         return shot_prompts
+
+    @staticmethod
+    def _fallback_sequence_role(position: int, total: int) -> str:
+        if total <= 1:
+            return "core_value"
+        if position == 0:
+            return "hook"
+        if position == total - 1:
+            return "cta"
+        roles = ["problem_or_scene", "core_value", "proof_or_detail", "result_or_lifestyle"]
+        return roles[(position - 1) % len(roles)]
+
+    @staticmethod
+    def _fallback_sequence_reason(position: int, total: int, source_img: dict) -> str:
+        role = PromptEngineerAgent._fallback_sequence_role(position, total)
+        content = as_str(source_img.get("image_content") or source_img.get("summary")).strip()
+        if role == "hook":
+            return "用视觉识别度最高的素材建立开场注意力。"
+        if role == "cta":
+            return "用可记忆的产品或品牌画面完成收束和转化引导。"
+        if content:
+            return f"根据素材内容衔接营销叙事：{content[:80]}"
+        return "根据素材角色承接上一镜头并推进营销叙事。"
 
     def _build_voice_params(
         self,

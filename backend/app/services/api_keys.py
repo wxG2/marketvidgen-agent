@@ -10,7 +10,7 @@ from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
+from app.db.session import get_db
 from app.models.api_key import ApiKey
 from app.models.user import User
 

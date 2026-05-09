@@ -6,8 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user, require_admin
-from app.database import get_db
+from app.core.security import get_current_user, require_admin
+from app.db.session import get_db
 from app.models.api_key import ApiKey
 from app.models.user import User
 from app.schemas.public_api import (

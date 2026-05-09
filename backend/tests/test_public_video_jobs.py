@@ -11,7 +11,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.database import Base, get_db
+from app.db.session import Base, get_db
 from app.models import *  # noqa: F401,F403
 from app.models.external_video_job import ExternalVideoJob
 from app.models.material import Material

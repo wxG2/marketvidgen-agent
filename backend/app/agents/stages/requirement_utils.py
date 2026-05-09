@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.config import settings
+from app.core.config import settings
 
 REQUIREMENT_PARSER_SYSTEM_PROMPT = (
     "You are a video production requirement analyst. "

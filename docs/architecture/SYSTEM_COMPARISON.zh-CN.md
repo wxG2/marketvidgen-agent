@@ -6,6 +6,15 @@
 
 - 最后全量同步时间：`2026-04-23 CST`（UTC+8）。
 - 时间口径说明：以下时间是”文档与代码对齐确认时间”，不是每一处代码首次提交时间。
+- `2026-05-09`：自动模式聊天框新增失败流程继续命令。当前 `PipelineRun` 为 `failed` 时，用户输入 `continue`、`/continue`、`retry`、`/retry`、`继续` 或 `重试`，前端会直接调用 `/api/projects/{project_id}/pipeline/{run_id}/retry-agent`，重试最近失败的 Agent 并从该阶段继续；`LangGraphPipelineExecutor` 已补齐 `continue_from_retry(...)`，例如音频阶段超时但分镜视频已生成时，会复用已完成的 `video_generator` 输出，重试 `audio_subtitle -> video_editor -> qa_reviewer`。
+- `2026-05-09`：修正最终视频拼接顺序。`VideoEditorService` 不再调用 LLM 重新决定 `ordered_indices`，而是始终使用导演方案 / 视频生成器已经确定的 `shot_idx` 顺序，避免剪辑阶段覆盖 PromptEngineer 或 ReplicationPlanner 的镜头叙事设计。
+- `2026-05-08`：自动模式顶部隐藏调试型 pipeline 参数按钮（时长模式、模型原声、系统配音、转场、BGM、视频生成开关）。这些值改由 `frontend/src/components/pipeline/AutoModeStudio.vue` 中的 `AUTO_PIPELINE_CODE_SWITCHES` 统一控制，界面保留素材 / 参考视频入口、平台、背景模板和视频模型选择。
+- `2026-05-08`：强化导演 Agent 镜头方案。`PromptEngineerAgent` 现在要求将 `shot_idx` 作为最终时间线位置、`source_image_idx` 作为素材索引，并输出 `sequence_role` 与 `sequence_reason` 解释营销排序；普通生成会更明确地按 Hook / 场景痛点 / 核心卖点 / 细节证明 / 结果联想 / CTA 组织素材。
+- `2026-05-08`：修正剪辑时长优先级。`VideoEditorService` 在 fixed 与 auto 模式下都会优先使用导演方案中的 `duration_seconds` 对每个片段执行 FFmpeg 裁剪，字幕时长只作为缺少镜头时长时的兜底。
+- `2026-05-08`：新增鉴权最终成片预览接口 `GET /api/projects/{project_id}/pipeline/{run_id}/final-video`，自动模式聊天区的实时生成进度卡会在 pipeline 完成后直接渲染最终 `<video>`，不再要求先保存到仓库才能预览。
+- `2026-05-08`：自动模式聊天区新增实时“生成进度”卡片，复用 pipeline SSE 返回的 `PipelineRun` 与 `AgentExecution.progress_text` 展示当前阶段、各 Agent 状态、最新进度日志，并提供确认镜头方案和取消流程入口；右栏仍保留完整执行状态和中间产物。
+- `2026-05-08`：自动模式已选素材展示从文件名胶囊增强为缩略图条；会话中已选择的图片素材复用 `/api/materials/{material_id}/thumbnail` 直接显示预览，非图片素材仍显示文件名卡片，素材选择和 pipeline `image_ids` 传递逻辑不变。
+- `2026-05-08`：同步后端目录可读性调整。应用基础设施从根包迁入 `backend/app/core/`，数据库 session 迁入 `backend/app/db/session.py`；Qwen 客户端拆到 `backend/app/services/llm/`，视频生成能力拆到 `backend/app/services/video_generation/`，视频剪辑合成拆到 `backend/app/services/video_editing/`。`backend/app/services/video_generator.py` 仍作为兼容导出入口保留。
 - `2026-04-23`：前端仪表盘新增独立 `API Keys` 页签。普通用户可在“我的密钥”视图自助创建、查看和停用外部调用 API Key；管理员可在“客户密钥”视图按用户筛选、为指定客户创建 key 并查看其最后使用时间。完整 `vg_...` key 仅在创建成功当下展示一次，列表页仍只保留前缀、状态、scope 和最后使用时间，不改变后端“明文 key 不入库”的安全语义。
 - `2026-04-20`：新增外部视频生成 API v1。登录用户可创建 `vg_` 前缀 API Key，外部客户通过 `Authorization: Bearer vg_...` 调用 `/v1/video-jobs`，一次性上传多张图片素材和生成 `spec`；后端自动创建私有项目、入库素材、创建 `PipelineRun` 并复用现有执行器。外部任务默认强制进入审核态：普通生成等待 `shot_plan` 审核，复刻生成等待 `replication_plan` 审核；确认后继续生成，最终视频只通过 `/v1/video-jobs/{job_id}/result` 下载，不暴露本地绝对路径。
 - `2026-04-20`：补齐 P0 安全与一致性改进。上传入口新增统一 `upload_validation` 服务，参考视频、素材图片、Talking Head 图片 / 音频、时间线资产会校验扩展名、声明 MIME、文件头和大小限制；`PipelineCreateRequest` 对平台、时长、模型、转场、BGM、音量等字段增加 Pydantic 约束；抖音账号状态约束新增 `reauthorization_required` 并处理 SQLite naive datetime；抖音连接入口会在发起扫码 OAuth 前校验 Client Key / Client Secret 和 HTTPS 回调地址，配置错误返回 503 可读诊断；自动会话摘要补齐 `waiting_prompt_review` 中文状态；`USE_MOCK_LLM`、`USE_MOCK_GENERATOR`、`USE_MOCK_VIDEO_EDITOR` 已进入服务装配逻辑。
@@ -14,7 +23,7 @@
 - `2026-04-17`：普通生成链路语义收敛为 `OrchestratorAgent(Intake / Context) -> PromptEngineerAgent(Director)`。`RequirementParserAgent` 源文件保留兼容，但新普通 run 不再创建独立 `requirement_parser` 执行记录；Orchestrator 内部完成需求解析与素材上下文整理，`orchestrator_plan` 语义固定为导演输入上下文。Qwen 结构化返回增加宽容 JSON 提取、轻量 schema 校验和 `Qwen 请求失败 / 返回解析失败 / 返回校验失败` 三类进度诊断。
 - `2026-04-16`：移除实验性的 Swarm 编排模式；当前自动生成链路仅保留顺序 `PipelineExecutor` 与 `LangGraphPipelineExecutor`，同步删除 Swarm runtime、Lead prompt、运行中消息接口和前端状态展示字段。
 - `2026-04-16`：剪枝旧前端与未接入 helper；删除遗留 `.tsx` React 页面、未使用的 pipeline helper 和 `services/input_validator.py`，Orchestrator 不再分配短视频总时长，shot 时长交由提示词/生成方案侧表达，后端仅按视频提供方支持值兜底。
-- `2026-04-16`：拆分 FastAPI 应用装配职责；`backend/app/main.py` 只保留 lifespan、router 注册和静态文件挂载，服务 / Agent / runtime skill 装配下沉到 `backend/app/bootstrap.py`，异常处理与 CORS / 鉴权中间件移到 `backend/app/http.py`，health 和 artifact cleanup 移到 `backend/app/routers/system.py`。
+- `2026-04-16`：拆分 FastAPI 应用装配职责；`backend/app/main.py` 只保留 lifespan、router 注册和静态文件挂载，服务 / Agent / runtime skill 装配下沉到 `backend/app/bootstrap.py`，异常处理与 CORS / 鉴权中间件移到 `backend/app/core/http.py`，health 和 artifact cleanup 移到 `backend/app/routers/system.py`。
 - `2026-04-16`：收紧自动模式 `generate_video` runtime skill 路由；“设计方案 / 策划方案 / 营销方案”等文字方案请求默认走普通 assistant 对话，不再因包含“生成”二字直接启动视频 pipeline。当前视频生成优先模式下，若会话已有选中素材且用户明确要求生成 / 制作 / 输出视频，ChatAgent 会直接启动 `generate_video`，并把原始消息作为 `user_request` 进入 pipeline；随后由 Orchestrator 内部做需求理解与素材上下文整理。Vue 自动模式补齐“中止对话”和右侧“取消流程”入口，chat SSE 断开时会取消尚未完成的 tool task；已创建的 `PipelineRun` 会继续通过右侧 pipeline SSE 更新，需由 `/api/projects/{project_id}/pipeline/{run_id}/cancel` 标记为 `cancelled`。
 - `2026-04-17`：同步视频音频开关拆分；新增 `video_model_no_audio` 控制 Seedance/Kling 自带原声，默认关闭，`voiceover_no_audio` 控制 VidGen TTS/字幕，避免“模型原声”开关误跳过或误生成配音。
 - `2026-04-16`：强化普通视频生成链路的 `OrchestratorAgent` 调度职责；该 Agent 以状态机解析用户消息和图片，确定视频类型、发布平台、风格与目标时长，并把 `intent`、`image_context/source_images` 作为导演输入上下文传给下游。每次状态迁移会追加到 `AgentExecution.progress_text`，Vue 自动模式通过 pipeline SSE 更实时地展示执行进度。
@@ -115,7 +124,7 @@ vidgen 采用前后端分离架构，核心技术栈如下：
 - 选择角色 / 品牌背景模板
 - 根据已选素材自动生成脚本
 - 输入脚本并发起整条 pipeline
-- 配置 pipeline 参数（目标平台、时长、风格、语音等）
+- 配置可见 pipeline 参数（目标平台、背景模板、视频模型等）；时长模式、模型原声、系统配音、转场、BGM 和视频生成行为由前端代码常量 `AUTO_PIPELINE_CODE_SWITCHES` 控制
 - 会话级持久化保存脚本草稿、参考视频、背景模板、素材选择和当前运行状态
 - 当只有参考视频且用户表达“解析 / 分析 / 总结 / 描述”类诉求时，ChatAgent 会调用 `analyze_video` runtime skill，直接返回 `analysis_report`，不会进入视频生成 pipeline
 - 当用户只是要求“设计方案 / 策划方案 / 营销方案”时，ChatAgent 会按普通对话处理；只有明确要求“开始生成 / 输出视频 / 启动流水线”等生产动作时才自动命中 `generate_video`
@@ -130,6 +139,7 @@ vidgen 采用前后端分离架构，核心技术栈如下：
 - 在复刻模式下，对模型返回的异常方案结构做后端容错清洗，尽量继续产出可确认方案，而不是直接失败
 - 在等待确认阶段支持直接终止当前流程，避免会话长期卡在待确认状态
 - 在右侧执行状态中支持取消 `pending / running / waiting_confirmation / waiting_prompt_review` 的当前流程
+- 当当前流程失败时，聊天框输入 `continue` / `retry` / `继续` 会调用失败 Agent 重试接口，并从最近失败阶段继续执行
 - 展示最终视频和中间产物；提示词 Agent、音频字幕 Agent、视频生成 Agent 的产物会在成功后自动进入 `RepositoryAsset`，并在右侧栏按 agent 分组预览
 - 在运行中按 agent 展示过程面板，查看每一步的输入输出、报错和重试结果
 - 展示抖音、YouTube 平台卡片视频预览
@@ -351,7 +361,7 @@ Prompt 层集中管理系统提示词，包括：
 
 - 分镜规划 prompt（`ORCHESTRATOR_SYSTEM_PROMPT`）
 - 提示词生成 prompt（`PROMPT_ENGINEER_SYSTEM_PROMPT`），规定 80-200 词、镜头运动、光影等细节
-- 视频编辑决策 prompt（`VIDEO_EDITOR_SYSTEM_PROMPT`）
+- 视频编辑阶段不再有独立排序 prompt；最终拼接顺序沿用导演方案 / `video_generator` 的 `shot_idx` 顺序
 - QA 审核 prompt（`QA_REVIEWER_SYSTEM_PROMPT`），当前已接入剪辑后的 `QAReviewerAgent`，并可按建议触发有限自动重试
 - 视频复刻分析 prompt（`VIDEO_REPLICATION_SYSTEM_PROMPT`），用于关键帧分析、复刻方案生成，以及在无明确需求时按背景信息约束方案语义
 
@@ -388,7 +398,7 @@ Prompt 层集中管理系统提示词，包括：
 - 已选素材
 - 背景模板
 - 草稿脚本
-- 平台 / 时长 / 是否保留原声 / 转场 / BGM / 水印等参数
+- 平台、视频模型等可见参数；隐藏的时长 / 原声 / 配音 / 转场 / BGM / 视频生成开关按 `AUTO_PIPELINE_CODE_SWITCHES` 的当前代码值生效
 - 当前 `PipelineRun`
 - `AgentExecution` 历史
 - 成片交付与仓库状态
@@ -431,6 +441,8 @@ Prompt 层集中管理系统提示词，包括：
 
 - 视频提示词（80-200 词，包含镜头运动、光影描述）
 - 镜头时长（此处是后续 VideoGenerator / VideoEditor 使用的最终 shot 时长来源）
+- 营销叙事位置（`sequence_role`）和排序理由（`sequence_reason`）
+- 素材引用索引（`source_image_idx`，允许按专业营销结构重排素材）
 - 脚本片段
 - TTS 语音参数（voice_id、speed、tone）
 
@@ -461,8 +473,8 @@ Prompt 层集中管理系统提示词，包括：
 
 将视频片段、音频和字幕进行最终合成，主要过程包括：
 
-- 决定片段顺序
-- 按时长裁剪片段
+- 按导演方案 / 视频生成器输出的 `shot_idx` 顺序拼接片段，不在剪辑阶段调用 LLM 二次重排
+- 按导演方案中的 `duration_seconds` 裁剪片段（fixed / auto 模式均优先遵循方案时长）
 - 拼接全部片段
 - 添加转场（xfade）
 - 合成旁白音频
@@ -472,7 +484,7 @@ Prompt 层集中管理系统提示词，包括：
 - 输出最终视频
 - 最终时长探测
 
-编辑阶段对外只暴露一个 `final_video_path`，但内部上下文已经拿到了完整的 `video_clips_data`、`shot_prompts`、镜头时长、转场、BGM 和水印配置，因此这一层也是未来扩展“局部替换 / 局部重剪 / 质量复审”的主要挂点。
+编辑阶段会写回 `final_video_path`，同时 `/api/projects/{project_id}/pipeline/{run_id}/final-video` 提供鉴权读取，供自动模式聊天区直接预览最终成片。内部上下文已经拿到了完整的 `video_clips_data`、`shot_prompts`、镜头时长、转场、BGM 和水印配置，因此这一层也是未来扩展“局部替换 / 局部重剪 / 质量复审”的主要挂点。
 
 ## 6. 手动模式流程
 
@@ -756,9 +768,11 @@ Talking Head 是一个四步特殊流程设计，目前前后端流程与 Mock �
 
 - `backend/app/main.py`
 - `backend/app/bootstrap.py`
-- `backend/app/http.py`
-- `backend/app/config.py`
-- `backend/app/database.py`
+- `backend/app/core/http.py`
+- `backend/app/core/config.py`
+- `backend/app/core/security.py`
+- `backend/app/core/logging.py`
+- `backend/app/db/session.py`
 
 ### Agent 与 Pipeline
 
@@ -779,13 +793,14 @@ Talking Head 是一个四步特殊流程设计，目前前后端流程与 Mock �
 ### 服务层
 
 - `backend/app/services/llm_service.py`
-- `backend/app/services/qwen_client.py`
+- `backend/app/services/llm/qwen_client.py`
 - `backend/app/services/social_accounts.py`
 - `backend/app/services/api_keys.py`
 - `backend/app/services/public_video_jobs.py`
 - `backend/app/services/video_delivery.py`
 - `backend/app/services/video_generator.py`
-- `backend/app/services/video_editor_service.py`
+- `backend/app/services/video_generation/router.py`
+- `backend/app/services/video_editing/composer.py`
 - `backend/app/services/tts_service.py`
 - `backend/app/services/video_analyzer.py`
 - `backend/app/services/material_service.py`

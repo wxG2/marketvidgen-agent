@@ -39,8 +39,8 @@ for d in ("/tmp/vidgen_test_materials", "/tmp/vidgen_test_examples", "/tmp/vidge
 # ---------------------------------------------------------------------------
 # Now import app modules (they will pick up the env vars above).
 # ---------------------------------------------------------------------------
-from app.database import Base, get_db  # noqa: E402
-from app.auth import SESSION_COOKIE_NAME, hash_password, hash_session_token  # noqa: E402
+from app.db.session import Base, get_db  # noqa: E402
+from app.core.security import SESSION_COOKIE_NAME, hash_password, hash_session_token  # noqa: E402
 from app.models import *  # noqa: F401,F403,E402  -- register all models
 from app.models.user import User, UserSession  # noqa: E402
 from app.main import app  # noqa: E402

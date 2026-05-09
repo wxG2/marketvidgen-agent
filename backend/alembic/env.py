@@ -18,13 +18,13 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Import all models so that Base.metadata is fully populated
-from app.database import Base
+from app.db.session import Base
 from app.models import *  # noqa: F401,F403
 
 target_metadata = Base.metadata
 
 # Set the sqlalchemy.url from the application config
-from app.config import settings
+from app.core.config import settings
 
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 

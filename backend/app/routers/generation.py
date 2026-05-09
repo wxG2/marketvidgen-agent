@@ -10,9 +10,9 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user, get_project_for_user
-from app.config import settings
-from app.database import get_db, async_session
+from app.core.security import get_current_user, get_project_for_user
+from app.core.config import settings
+from app.db.session import get_db, async_session
 from app.models.prompt import Prompt
 from app.models.material import Material
 from app.models.material_selection import MaterialSelection

@@ -16,7 +16,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database import Base
+from app.db.session import Base
 
 
 class AgentMemory(Base):
