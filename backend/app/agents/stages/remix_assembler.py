@@ -90,6 +90,25 @@ class RemixAssemblerAgent(BaseAgent):
             )
             target_fps = 30
 
+            # Pre-generate per-segment TTS BEFORE clip extraction so we can extend
+            # each segment's video duration to cover the full voiceover sentence.
+            # This achieves natural balance: video and audio align at every cut.
+            pre_vo_result: tuple[str, list[dict]] | None = None
+            if voiceover_config.get("add_voiceover") and self.tts_service is not None:
+                any_vo = any(
+                    str(s.get("voiceover") or s.get("script_segment") or s.get("narration") or "").strip()
+                    for s in segments
+                )
+                if any_vo:
+                    await context.report_progress("正在生成分段旁白音频...", agent_name=self.name)
+                    pre_vo_result = await self._pre_generate_and_adjust_segments(
+                        segments,
+                        str(voiceover_config.get("voice_id") or "default"),
+                        float(voiceover_config.get("voice_speed") or 1.0),
+                        temp_dir,
+                        source_paths,
+                    )
+
             clip_paths = await asyncio.gather(
                 *[
                     self._extract_segment(
@@ -143,6 +162,7 @@ class RemixAssemblerAgent(BaseAgent):
                     voiceover_config,
                     segments,
                     audio_artifact,
+                    pre_generated_voiceover=pre_vo_result,
                 )
             duration = await _probe_duration(self.ffmpeg_bin, output_path, run_subprocess) or 0.0
             return AgentResult(
@@ -180,6 +200,89 @@ class RemixAssemblerAgent(BaseAgent):
             target_height=target_height,
             target_fps=target_fps,
         )
+
+    async def _pre_generate_and_adjust_segments(
+        self,
+        segments: list[dict],
+        voice_id: str,
+        speed: float,
+        temp_dir: str,
+        source_paths: dict[str, str],  # noqa: ARG002 (reserved for future per-segment path validation)
+    ) -> tuple[str, list[dict]] | None:
+        """Generate TTS per segment, then extend each segment's end_seconds so the
+        video clip is long enough to cover the full voiceover sentence.
+
+        Returns (combined_audio_path, merged_timed_subtitle_segments) for use in
+        _apply_voiceover_subtitles, or None if no voiceover texts found.
+        """
+        per_segment_items: list[tuple[str, list[dict], float]] = []
+        offset_s = 0.0
+
+        for segment in segments:
+            text = str(segment.get("voiceover") or segment.get("script_segment") or segment.get("narration") or "").strip()
+            if text:
+                tts_result = await self.tts_service.synthesize(text=text, voice_id=voice_id, speed=speed)
+                sub_path = await self.tts_service.generate_subtitles(text=text, audio_path=tts_result.audio_path)
+                tts_dur = await _probe_duration(self.ffmpeg_bin, tts_result.audio_path, run_subprocess) or 0.0
+                raw_subs = _parse_srt_timed(sub_path) if sub_path and os.path.exists(sub_path) else []
+                subs = [
+                    {"start_s": s["start_s"] + offset_s, "end_s": s["end_s"] + offset_s, "text": s["text"]}
+                    for s in raw_subs
+                ]
+                per_segment_items.append((tts_result.audio_path, subs, tts_dur))
+
+                # Balance: extend segment video to cover the full voiceover sentence.
+                # Clamped to 3× planned duration to avoid pulling too much source footage.
+                planned = _segment_duration(segment)
+                if tts_dur > planned + 0.05:
+                    new_dur = min(tts_dur, planned * 3.0, 10.0)
+                    segment["end_seconds"] = round(float(segment["start_seconds"]) + new_dur, 3)
+                    offset_s += new_dur
+                else:
+                    offset_s += planned
+            else:
+                per_segment_items.append(("", [], 0.0))
+                offset_s += _segment_duration(segment)
+
+        if not any(p[0] for p in per_segment_items):
+            return None
+
+        merged_subs: list[dict] = []
+        for _, subs, _ in per_segment_items:
+            merged_subs.extend(subs)
+
+        if sum(1 for p in per_segment_items if p[0]) == 1:
+            audio_path = next(p[0] for p in per_segment_items if p[0])
+            return audio_path, merged_subs
+
+        combined_path = os.path.join(temp_dir, f"vo_combined_{uuid.uuid4().hex[:8]}.aac")
+        input_args: list[str] = []
+        filter_parts: list[str] = []
+        mix_labels: list[str] = []
+        audio_idx = 0
+        cumulative = 0.0
+        for seg, (audio_path, _, _) in zip(segments, per_segment_items):
+            seg_dur = _segment_duration(seg)
+            if audio_path:
+                delay_ms = int(cumulative * 1000)
+                label = f"[a{audio_idx}]"
+                input_args.extend(["-i", audio_path])
+                filter_parts.append(f"[{audio_idx}:a]adelay={delay_ms}:all=1{label}")
+                mix_labels.append(label)
+                audio_idx += 1
+            cumulative += seg_dur
+
+        n = len(mix_labels)
+        filter_parts.append(f"{''.join(mix_labels)}amix=inputs={n}:duration=longest:normalize=0[aout]")
+        rc, _, stderr = await run_subprocess(
+            self.ffmpeg_bin, "-y",
+            *input_args,
+            "-filter_complex", ";".join(filter_parts),
+            "-map", "[aout]", "-c:a", "aac", combined_path,
+        )
+        if rc != 0:
+            raise RuntimeError(f"ffmpeg pre-generate voiceover combine failed: {stderr}")
+        return combined_path, merged_subs
 
     async def _resolve_target_dimensions(
         self, source_paths: list[str], *, platform: str = "generic"
@@ -415,16 +518,7 @@ class RemixAssemblerAgent(BaseAgent):
         for idx, (_, _, offset) in enumerate(per_segment_items):
             delay_ms = int(offset * 1000)
             label = f"[a{idx}]"
-            # atrim limits voiceover to the segment's video duration so it never
-            # bleeds into the next segment; asetpts resets timestamps after trim.
-            seg = segments[idx] if idx < len(segments) else None
-            seg_dur = _segment_duration(seg) if seg else 0.0
-            if seg_dur > 0.05:
-                filter_parts.append(
-                    f"[{idx}:a]atrim=0:{seg_dur:.3f},asetpts=PTS-STARTPTS,adelay={delay_ms}:all=1{label}"
-                )
-            else:
-                filter_parts.append(f"[{idx}:a]adelay={delay_ms}:all=1{label}")
+            filter_parts.append(f"[{idx}:a]adelay={delay_ms}:all=1{label}")
             mix_labels.append(label)
         n = len(per_segment_items)
         filter_parts.append(f"{''.join(mix_labels)}amix=inputs={n}:duration=longest:normalize=0[aout]")
@@ -452,25 +546,27 @@ class RemixAssemblerAgent(BaseAgent):
         input_config: dict,
         segments: list[dict],
         audio_artifact: dict | None = None,
+        *,
+        pre_generated_voiceover: tuple[str, list[dict]] | None = None,
     ) -> str:
         audio_artifact = audio_artifact or {}
         subtitle_path = str(audio_artifact.get("subtitle_path") or "").strip()
         timed_segments: list[dict] = []
         per_seg_temp: str | None = None
         try:
-            # When segments carry individual voiceover texts, always use per-segment
-            # TTS regardless of any pre-generated audio_artifact. Pre-generated audio
-            # (from AudioSubtitleAgent) is a single concatenated script that is not
-            # aligned to segment boundaries and tends to be much longer than the video.
-            has_per_segment_voiceover = any(
-                str(seg.get("voiceover") or seg.get("script_segment") or seg.get("narration") or "").strip()
-                for seg in segments
-            )
-
             voice_id = str(input_config.get("voice_id") or "default")
             speed = float(input_config.get("voice_speed") or input_config.get("speed") or 1.0)
 
-            if has_per_segment_voiceover and self.tts_service is not None:
+            if pre_generated_voiceover is not None:
+                # Use TTS that was pre-generated before clip extraction (best alignment).
+                audio_path, timed_segments = pre_generated_voiceover
+                if not audio_path:
+                    shutil.copy2(input_path, output_path)
+                    return output_path
+            elif any(
+                str(seg.get("voiceover") or seg.get("script_segment") or seg.get("narration") or "").strip()
+                for seg in segments
+            ) and self.tts_service is not None:
                 per_seg_temp = tempfile.mkdtemp(prefix="vidgen_remix_vo_")
                 audio_path, timed_segments = await self._build_per_segment_voiceover(
                     segments, voice_id, speed, per_seg_temp
