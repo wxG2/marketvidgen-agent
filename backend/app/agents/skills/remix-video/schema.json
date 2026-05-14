@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "properties": {
+    "direction": {
+      "type": "string",
+      "description": "混剪方向或补充要求，用自然语言描述希望保留、突出或调整的内容。留空则按多个参考视频自动规划混剪节奏。"
+    },
+    "generation_model": {
+      "type": "string",
+      "enum": ["seedance1.5-pro", "seedance2.0", "kling"],
+      "description": "兼容字段；混剪路径主要抽取源视频片段，不直接调用图生视频模型。"
+    }
+  },
+  "required": []
+}
