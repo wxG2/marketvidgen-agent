@@ -114,14 +114,19 @@ class RemixPlannerAgent(BaseAgent):
         config = input_data.get("remix_config") or {}
         explicit_material_id = str(config.get("bgm_material_id") or "").strip()
         async with context.db_session_factory() as session:
+            # Level 1: explicit bgm_material_id
             if explicit_material_id:
                 material = await session.get(Material, explicit_material_id)
-                return await self._material_bgm_context(
+                ctx, err = await self._material_bgm_context(
                     material,
                     explicit_material_id=explicit_material_id,
                     user_id=context.user_id,
                 )
+                if ctx:
+                    return ctx, None
+                logger.warning("explicit bgm_material_id %s failed: %s", explicit_material_id, err)
 
+            # Level 2: first session-selected audio material
             session_id = str(input_data.get("session_id") or "").strip()
             if session_id:
                 result = await session.execute(
@@ -136,11 +141,33 @@ class RemixPlannerAgent(BaseAgent):
                 )
                 material = result.scalars().first()
                 if material:
-                    return await self._material_bgm_context(
+                    ctx, err = await self._material_bgm_context(
                         material,
                         explicit_material_id=material.id,
                         user_id=context.user_id,
                     )
+                    if ctx:
+                        return ctx, None
+                    logger.warning("session bgm material %s failed: %s", material.id, err)
+
+            # Level 3: any audio material owned by this user
+            if context.user_id:
+                result = await session.execute(
+                    select(Material)
+                    .where(Material.user_id == context.user_id, Material.media_type == "audio")
+                    .order_by(Material.created_at.desc())
+                    .limit(1)
+                )
+                material = result.scalars().first()
+                if material:
+                    ctx, err = await self._material_bgm_context(
+                        material,
+                        explicit_material_id=material.id,
+                        user_id=context.user_id,
+                    )
+                    if ctx:
+                        return ctx, None
+                    logger.warning("user fallback bgm material %s failed: %s", material.id, err)
 
         bgm_mood = str(config.get("bgm_mood") or input_data.get("bgm_mood") or "none")
         return {
