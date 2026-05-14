@@ -82,6 +82,8 @@ class RemixAssemblerAgent(BaseAgent):
         temp_dir = tempfile.mkdtemp(prefix="vidgen_remix_")
         os.makedirs(self.output_dir, exist_ok=True)
         try:
+            voiceover_config = self._voiceover_config({**input_config, "remix_plan": plan})
+
             # Determine target resolution from platform setting (e.g. douyin=720×1280),
             # falling back to majority vote across source videos if platform is unknown.
             platform = str(input_config.get("platform") or "generic").lower()
@@ -145,9 +147,6 @@ class RemixAssemblerAgent(BaseAgent):
             else:
                 await self._concat_simple(clip_paths, merged_path, include_audio=include_audio)
 
-            voiceover_config = self._voiceover_config(
-                {**input_config, "remix_plan": plan}
-            )
             audio_artifact = input_data.get("audio") if isinstance(input_data.get("audio"), dict) else {}
 
             final_path = os.path.join(self.output_dir, f"remix_{uuid.uuid4().hex[:8]}.mp4")
