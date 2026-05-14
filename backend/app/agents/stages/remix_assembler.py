@@ -131,22 +131,11 @@ class RemixAssemblerAgent(BaseAgent):
             )
             audio_artifact = input_data.get("audio") if isinstance(input_data.get("audio"), dict) else {}
 
-            # Probe pre-generated voiceover duration so _apply_audio_design can
-            # extend the video (freeze last frame + loop BGM) when voiceover is longer.
-            voiceover_duration: float | None = None
-            if voiceover_config.get("add_voiceover"):
-                vo_path = str(audio_artifact.get("audio_path") or "").strip()
-                if vo_path and os.path.exists(vo_path):
-                    voiceover_duration = await _probe_duration(self.ffmpeg_bin, vo_path, run_subprocess)
-
             final_path = os.path.join(self.output_dir, f"remix_{uuid.uuid4().hex[:8]}.mp4")
             audio_output_path = final_path
             if voiceover_config.get("add_voiceover"):
                 audio_output_path = os.path.join(temp_dir, "remix_audio_designed.mp4")
-            output_path = await self._apply_audio_design(
-                merged_path, audio_output_path, audio_design, strategy,
-                voiceover_duration=voiceover_duration,
-            )
+            output_path = await self._apply_audio_design(merged_path, audio_output_path, audio_design, strategy)
             if voiceover_config.get("add_voiceover"):
                 output_path = await self._apply_voiceover_subtitles(
                     output_path,
@@ -262,15 +251,7 @@ class RemixAssemblerAgent(BaseAgent):
         if rc != 0:
             raise RuntimeError(f"ffmpeg concat failed: {stderr}")
 
-    async def _apply_audio_design(
-        self,
-        input_path: str,
-        output_path: str,
-        audio_design: dict,
-        strategy: str,
-        *,
-        voiceover_duration: float | None = None,
-    ) -> str:
+    async def _apply_audio_design(self, input_path: str, output_path: str, audio_design: dict, strategy: str) -> str:
         bgm_mood = str(audio_design.get("bgm_mood") or "none")
         bgm_path = self._resolve_bgm_path(audio_design, bgm_mood)
 
@@ -283,51 +264,38 @@ class RemixAssemblerAgent(BaseAgent):
                 raise RuntimeError(f"ffmpeg output mux failed: {stderr}")
             return output_path
 
-        video_duration = await _probe_duration(self.ffmpeg_bin, input_path, run_subprocess) or 30.0
-        # Audio-first: if voiceover is longer than the video, extend the video
-        # by freezing the last frame, and loop the BGM to fill the full duration.
-        target_duration = max(video_duration, voiceover_duration or 0.0)
-        needs_extend = target_duration > video_duration + 0.05
-
+        duration = await _probe_duration(self.ffmpeg_bin, input_path, run_subprocess) or 30.0
         volume = _clamp_float(audio_design.get("bgm_volume"), 0.0, 1.0, 0.25)
-        fade_duration = min(2.0, target_duration * 0.15)
-        fade_out_start = max(target_duration - fade_duration, 0)
-
+        fade_duration = min(2.0, duration * 0.15)
+        fade_out_start = max(duration - fade_duration, 0)
         if strategy == "mix" and await self._has_audio_stream(input_path):
-            video_map = "[vext]" if needs_extend else "0:v:0"
-            video_codec = ["-c:v", "libx264", "-pix_fmt", "yuv420p"] if needs_extend else ["-c:v", "copy"]
-            tpad = "[0:v]tpad=stop=-1:stop_mode=clone[vext];" if needs_extend else ""
             rc, _, stderr = await run_subprocess(
                 self.ffmpeg_bin, "-y",
                 "-i", input_path,
                 "-stream_loop", "-1", "-i", bgm_path,
                 "-filter_complex",
                 (
-                    f"{tpad}"
                     f"[0:a]volume=0.30[src];"
                     f"[1:a]volume={volume:.2f},afade=t=in:d=1.0,afade=t=out:st={fade_out_start:.3f}:d={fade_duration:.3f}[bgm];"
                     "[src][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]"
                 ),
-                "-map", video_map, "-map", "[aout]",
-                "-t", f"{target_duration:.3f}",
-                *video_codec, "-c:a", "aac", "-shortest", output_path,
+                "-map", "0:v:0", "-map", "[aout]",
+                "-t", f"{duration:.3f}",
+                "-c:v", "copy", "-c:a", "aac", "-shortest", output_path,
             )
             if rc != 0:
                 raise RuntimeError(f"ffmpeg bgm mix failed: {stderr}")
             return output_path
 
-        video_map = "[vext]" if needs_extend else "0:v:0"
-        video_codec = ["-c:v", "libx264", "-pix_fmt", "yuv420p"] if needs_extend else ["-c:v", "copy"]
-        tpad = "[0:v]tpad=stop=-1:stop_mode=clone[vext];" if needs_extend else ""
         rc, _, stderr = await run_subprocess(
             self.ffmpeg_bin, "-y",
             "-i", input_path,
             "-stream_loop", "-1", "-i", bgm_path,
             "-filter_complex",
-            f"{tpad}[1:a]volume={volume:.2f},afade=t=in:d=1.0,afade=t=out:st={fade_out_start:.3f}:d={fade_duration:.3f}[bgm]",
-            "-map", video_map, "-map", "[bgm]",
-            "-t", f"{target_duration:.3f}",
-            *video_codec, "-c:a", "aac", "-shortest", output_path,
+            f"[1:a]volume={volume:.2f},afade=t=in:d=1.0,afade=t=out:st={fade_out_start:.3f}:d={fade_duration:.3f}[bgm]",
+            "-map", "0:v:0", "-map", "[bgm]",
+            "-t", f"{duration:.3f}",
+            "-c:v", "copy", "-c:a", "aac", "-shortest", output_path,
         )
         if rc != 0:
             raise RuntimeError(f"ffmpeg bgm mux failed: {stderr}")
