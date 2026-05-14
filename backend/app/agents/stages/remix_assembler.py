@@ -82,9 +82,19 @@ class RemixAssemblerAgent(BaseAgent):
         temp_dir = tempfile.mkdtemp(prefix="vidgen_remix_")
         os.makedirs(self.output_dir, exist_ok=True)
         try:
+            # Determine a common target resolution/fps by probing all unique source paths.
+            # Normalizing at extraction time ensures the concat demuxer receives uniform clips.
+            target_w, target_h = await self._resolve_target_dimensions(
+                list(source_paths.values())
+            )
+            target_fps = 30
+
             clip_paths = await asyncio.gather(
                 *[
-                    self._extract_segment(source_paths[str(seg.get("source_video_id"))], seg, idx, temp_dir, include_audio)
+                    self._extract_segment(
+                        source_paths[str(seg.get("source_video_id"))], seg, idx, temp_dir,
+                        include_audio, target_w, target_h, target_fps,
+                    )
                     for idx, seg in enumerate(segments)
                 ]
             )
@@ -153,6 +163,9 @@ class RemixAssemblerAgent(BaseAgent):
         index: int,
         temp_dir: str,
         include_audio: bool,
+        target_width: int | None = None,
+        target_height: int | None = None,
+        target_fps: int | None = None,
     ) -> str:
         output_path = os.path.join(temp_dir, f"segment_{index:03d}.mp4")
         return await self.clip_extractor.extract_clip(
@@ -161,7 +174,22 @@ class RemixAssemblerAgent(BaseAgent):
             float(segment.get("end_seconds") or 0),
             output_path,
             include_audio=include_audio,
+            target_width=target_width,
+            target_height=target_height,
+            target_fps=target_fps,
         )
+
+    async def _resolve_target_dimensions(self, source_paths: list[str]) -> tuple[int, int]:
+        """Probe all unique source video dimensions and pick the most common W×H."""
+        from collections import Counter
+        dims: list[tuple[int, int]] = []
+        for path in source_paths:
+            w, h = await self._probe_video_dimensions(path)
+            dims.append((w, h))
+        if not dims:
+            return 1080, 1920
+        (target_w, target_h), _ = Counter(dims).most_common(1)[0]
+        return target_w, target_h
 
     async def _resolve_sources(self, context: AgentContext, video_ids: set[str]) -> dict[str, str]:
         resolved: dict[str, str] = {}
@@ -187,40 +215,23 @@ class RemixAssemblerAgent(BaseAgent):
         return None
 
     async def _concat_simple(self, clip_paths: list[str], output_path: str, *, include_audio: bool) -> None:
-        # Use filter_complex concat with per-input scale+fps normalization.
-        # The concat demuxer with a post-hoc vf scale is NOT sufficient: when clips
-        # have different resolutions or frame rates, FFmpeg triggers a filter graph
-        # reconfigure mid-stream and silently drops all frames from the second clip.
-        # The filter_complex approach scales and resamples each input individually
-        # before concatenation, so all combinations of resolution and fps work correctly.
-        target_w, target_h = await self._probe_video_dimensions(clip_paths[0])
-        input_args: list[str] = []
-        for p in clip_paths:
-            input_args.extend(["-i", p])
-
-        scale = (
-            f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
-            f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black,fps=30,setsar=1"
+        # All clips are already normalized to the same resolution/fps at extraction time,
+        # so the simple concat demuxer works without filter graph reconfiguration.
+        concat_file = os.path.join(os.path.dirname(output_path), "concat.txt")
+        Path(concat_file).write_text(
+            "\n".join(f"file '{Path(path).as_posix()}'" for path in clip_paths),
+            encoding="utf-8",
         )
+        args = [
+            self.ffmpeg_bin, "-y",
+            "-f", "concat", "-safe", "0", "-i", concat_file,
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        ]
         if include_audio:
-            filter_parts = [f"[{i}:v]{scale}[v{i}];[{i}:a]aresample=44100[a{i}]" for i in range(len(clip_paths))]
-            video_labels = "".join(f"[v{i}]" for i in range(len(clip_paths)))
-            audio_labels = "".join(f"[a{i}]" for i in range(len(clip_paths)))
-            n = len(clip_paths)
-            filter_parts.append(f"{video_labels}{audio_labels}concat=n={n}:v=1:a=1[vout][aout]")
-            filter_complex = ";".join(filter_parts)
-            map_args = ["-map", "[vout]", "-map", "[aout]", "-c:a", "aac"]
+            args.extend(["-c:a", "aac"])
         else:
-            filter_parts = [f"[{i}:v]{scale}[v{i}]" for i in range(len(clip_paths))]
-            video_labels = "".join(f"[v{i}]" for i in range(len(clip_paths)))
-            n = len(clip_paths)
-            filter_parts.append(f"{video_labels}concat=n={n}:v=1:a=0[vout]")
-            filter_complex = ";".join(filter_parts)
-            map_args = ["-map", "[vout]"]
-
-        args = [self.ffmpeg_bin, "-y"] + input_args + [
-            "-filter_complex", filter_complex,
-        ] + map_args + ["-c:v", "libx264", "-pix_fmt", "yuv420p", output_path]
+            args.append("-an")
+        args.append(output_path)
         rc, _, stderr = await run_subprocess(*args)
         if rc != 0:
             raise RuntimeError(f"ffmpeg concat failed: {stderr}")

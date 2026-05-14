@@ -21,9 +21,25 @@ class ClipExtractorService:
         output_path: str,
         *,
         include_audio: bool = True,
+        target_width: int | None = None,
+        target_height: int | None = None,
+        target_fps: int | None = None,
     ) -> str:
         duration = max(float(end_seconds) - float(start_seconds), 0.1)
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        # Build optional video filter for resolution/fps normalization.
+        # Applied at extraction time so all clips are uniform before concat.
+        vf_parts: list[str] = []
+        if target_width and target_height:
+            vf_parts.append(
+                f"scale={target_width}:{target_height}"
+                f":force_original_aspect_ratio=decrease,"
+                f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1"
+            )
+        if target_fps:
+            vf_parts.append(f"fps={target_fps}")
+        vf_filter = ",".join(vf_parts)
 
         args = [
             self.ffmpeg_bin,
@@ -37,6 +53,8 @@ class ClipExtractorService:
             "-map",
             "0:v:0",
         ]
+        if vf_filter:
+            args.extend(["-vf", vf_filter])
         if include_audio:
             args.extend([
                 "-map",
@@ -57,6 +75,10 @@ class ClipExtractorService:
                 f"{float(start_seconds):.3f}",
                 "-i",
                 source_path,
+            ]
+            if vf_filter:
+                silent_args.extend(["-vf", vf_filter])
+            silent_args.extend([
                 "-f",
                 "lavfi",
                 "-t",
@@ -77,7 +99,7 @@ class ClipExtractorService:
                 "aac",
                 "-shortest",
                 output_path,
-            ]
+            ])
             rc, _, stderr = await run_subprocess(*silent_args)
         if rc != 0:
             raise RuntimeError(f"ffmpeg clip extraction failed: {stderr}")
