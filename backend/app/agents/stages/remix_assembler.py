@@ -192,6 +192,13 @@ class RemixAssemblerAgent(BaseAgent):
             "\n".join(f"file '{Path(path).as_posix()}'" for path in clip_paths),
             encoding="utf-8",
         )
+        # Probe first clip to get target resolution; all clips are scaled to match so
+        # libx264 concat doesn't silently truncate when source videos have different sizes.
+        target_w, target_h = await self._probe_video_dimensions(clip_paths[0])
+        scale_filter = (
+            f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
+            f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black"
+        )
         args = [
             self.ffmpeg_bin,
             "-y",
@@ -201,6 +208,8 @@ class RemixAssemblerAgent(BaseAgent):
             "0",
             "-i",
             concat_file,
+            "-vf",
+            scale_filter,
             "-c:v",
             "libx264",
             "-pix_fmt",
@@ -229,7 +238,7 @@ class RemixAssemblerAgent(BaseAgent):
             return output_path
 
         duration = await _probe_duration(self.ffmpeg_bin, input_path, run_subprocess) or 30.0
-        volume = _clamp_float(audio_design.get("bgm_volume"), 0.0, 1.0, 0.15)
+        volume = _clamp_float(audio_design.get("bgm_volume"), 0.0, 1.0, 0.25)
         fade_duration = min(2.0, duration * 0.15)
         fade_out_start = max(duration - fade_duration, 0)
         if strategy == "mix" and await self._has_audio_stream(input_path):
@@ -503,7 +512,7 @@ class RemixAssemblerAgent(BaseAgent):
                     if has_existing_audio:
                         filter_complex = (
                             f"{overlay_filter};"
-                            "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+                            "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]"
                         )
                         args.extend([
                             "-filter_complex",
@@ -549,7 +558,7 @@ class RemixAssemblerAgent(BaseAgent):
                     "-i",
                     audio_path,
                     "-filter_complex",
-                    "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+                    "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]",
                     "-map",
                     "0:v:0",
                     "-map",

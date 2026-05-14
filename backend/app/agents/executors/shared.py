@@ -851,22 +851,25 @@ _COMPACT_VOICEOVER_TEMPLATES: dict[str, list[str]] = {
 
 
 def _rewrite_voiceover_compact(original: str, role: str, budget_chars: int) -> str:
-    """Rewrite voiceover as a complete short sentence fitting within budget.
+    """Shorten voiceover to fit within budget while preserving the original meaning.
 
-    Never produces truncated text or ellipsis — always returns a full sentence
-    ending with proper punctuation (。/！/？).
+    Prefers truncating the original at the last natural break (punctuation) rather
+    than replacing with a generic template, so LLM-generated content survives
+    voiceover compression.
     """
-    import random
+    if len(original) <= budget_chars:
+        return original
 
-    templates = _COMPACT_VOICEOVER_TEMPLATES.get(role, _COMPACT_VOICEOVER_TEMPLATES["buildup"])
-    # Find templates that fit within budget
-    fitting = [t for t in templates if len(t) <= budget_chars]
-    if not fitting:
-        # Even the shortest template exceeds budget — use the shortest available
-        fitting = [min(templates, key=len)]
-    # If budget is generous enough, prefer slightly longer sentences for variety
-    if budget_chars >= 18:
-        longer = [t for t in fitting if len(t) >= 12]
-        if longer:
-            fitting = longer
-    return random.choice(fitting)
+    # Try to cut at last punctuation within budget
+    chunk = original[:budget_chars]
+    for i in range(len(chunk) - 1, max(5, budget_chars // 2) - 1, -1):
+        if chunk[i] in "，。！？、":
+            result = chunk[:i]
+            if result and not result.endswith(("。", "！", "？")):
+                result = result.rstrip("，、") + "。"
+            if result and len(result) >= 5:
+                return result
+
+    # No good break found: truncate at budget and add period
+    result = chunk.rstrip("，、…") + "。"
+    return result

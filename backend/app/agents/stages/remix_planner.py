@@ -808,7 +808,7 @@ class RemixPlannerAgent(BaseAgent):
             "bgm_filename": bgm_context.get("bgm_filename") or "",
             "bgm_duration_seconds": bgm_context.get("bgm_duration_seconds"),
             "bgm_mood": bgm_mood,
-            "bgm_volume": _clamp_float(config.get("bgm_volume", input_data.get("bgm_volume")), 0.0, 1.0, 0.15),
+            "bgm_volume": _clamp_float(config.get("bgm_volume", input_data.get("bgm_volume")), 0.0, 1.0, 0.25),
             "voice_id": voice_id,
             "voice_speed": voice_speed,
             "voice_tone": voice_tone,
