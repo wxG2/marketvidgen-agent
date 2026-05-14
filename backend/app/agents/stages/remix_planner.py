@@ -155,7 +155,7 @@ class RemixPlannerAgent(BaseAgent):
                 result = await session.execute(
                     select(Material)
                     .where(Material.user_id == context.user_id, Material.media_type == "audio")
-                    .order_by(Material.created_at.desc())
+                    .order_by(Material.indexed_at.desc())
                     .limit(1)
                 )
                 material = result.scalars().first()
@@ -376,7 +376,22 @@ class RemixPlannerAgent(BaseAgent):
         if available_total < target - REMIX_TARGET_TOLERANCE_SECONDS:
             target = round(max(MIN_REMIX_SEGMENT_DURATION_SECONDS, available_total), 3)
 
-        ranked_shots = sorted(eligible_shots, key=self._shot_priority_score, reverse=True)
+        # Guarantee at least 1 shot from every source video before greedy fill
+        shots_by_video: dict[str, list] = {}
+        for shot in eligible_shots:
+            shots_by_video.setdefault(shot.video_id, []).append(shot)
+        guaranteed: list = []
+        for vid_shots in shots_by_video.values():
+            best = max(vid_shots, key=self._shot_priority_score)
+            guaranteed.append(best)
+        guaranteed_ids = {id(s) for s in guaranteed}
+        remaining = sorted(
+            [s for s in eligible_shots if id(s) not in guaranteed_ids],
+            key=self._shot_priority_score,
+            reverse=True,
+        )
+        ranked_shots = guaranteed + remaining
+
         candidates = [
             {
                 "shot": shot,
@@ -612,6 +627,7 @@ class RemixPlannerAgent(BaseAgent):
         include_voiceover: bool = False,
     ) -> list[dict[str, Any]]:
         segments: list[dict[str, Any]] = []
+        used_voiceovers: set[str] = set()
         for idx, item in enumerate(selected_candidates):
             shot: ShotProfile = item["shot"]
             next_shot = selected_candidates[idx + 1]["shot"] if idx + 1 < len(selected_candidates) else None
@@ -652,7 +668,9 @@ class RemixPlannerAgent(BaseAgent):
                     raw_segment,
                     description=description,
                     role=segment["role"],
+                    used_voiceovers=used_voiceovers,
                 )
+                used_voiceovers.add(segment["voiceover"])
             segments.append(segment)
         return segments
 
@@ -952,15 +970,18 @@ _ROLE_VOICEOVER_TEMPLATES: dict[str, list[str]] = {
 }
 
 
-def _generate_voiceover_by_role(role: str) -> str:
+def _generate_voiceover_by_role(role: str, used: set[str] | None = None) -> str:
     """Generate a complete short sentence (16-28 chars) based on narrative role.
 
-    Never truncates description text — always produces a full sentence ending
-    with proper punctuation (。/！/？), never with ellipsis.
+    Avoids returning already-used texts when possible.
     """
     import random
 
     templates = _ROLE_VOICEOVER_TEMPLATES.get(role, _ROLE_VOICEOVER_TEMPLATES["buildup"])
+    if used:
+        available = [t for t in templates if t not in used]
+        if available:
+            return random.choice(available)
     return random.choice(templates)
 
 
@@ -968,6 +989,7 @@ def _safe_segment_voiceover(
     raw_segment: dict,
     description: str,
     role: str,
+    used_voiceovers: set[str] | None = None,
 ) -> str:
     """Validate and potentially rewrite a segment's voiceover text.
 
@@ -977,6 +999,7 @@ def _safe_segment_voiceover(
     - Is not highly similar to the shot description
     - Does not contain visual frame analysis keywords
     - Is a complete short sentence (16-28 chars) ending with proper punctuation
+    - Is not a duplicate of already-used voiceover texts
     """
     # Extract candidate voiceover from raw segment
     candidate = ""
@@ -996,12 +1019,13 @@ def _safe_segment_voiceover(
         needs_rewrite = True
     elif _is_image_description(candidate):
         needs_rewrite = True
-    # Also check if it's weirdly short or long
     elif len(candidate) < 6 or len(candidate) > 60:
+        needs_rewrite = True
+    elif used_voiceovers and candidate in used_voiceovers:
         needs_rewrite = True
 
     if needs_rewrite:
-        return _generate_voiceover_by_role(role)
+        return _generate_voiceover_by_role(role, used=used_voiceovers)
 
     # Ensure it ends with proper punctuation, not ellipsis
     if not candidate.endswith(("。", "！", "？")):

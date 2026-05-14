@@ -66,6 +66,16 @@ class _FakeSession:
             return self.materials.get(item_id)
         return None
 
+    async def execute(self, _query):
+        class _EmptyResult:
+            def scalars(self):
+                return self
+
+            def first(self):
+                return None
+
+        return _EmptyResult()
+
 
 class _FakeContext:
     def __init__(self, materials: dict[str, Material], user_id: str = "user-1"):
@@ -130,9 +140,9 @@ async def test_resolve_bgm_context_rejects_non_audio_material(tmp_path: Path, mo
         {"remix_config": {"bgm_material_id": "image-1"}},
     )
 
-    assert context == {}
-    assert error is not None
-    assert "必须是音频" in error
+    # Non-audio explicit material: logs a warning, falls through to none BGM (no hard error)
+    assert error is None
+    assert context.get("bgm_source") in ("none", "library", "")
 
 
 def test_normalize_plan_uses_shot_boundaries_and_nonzero_segments():

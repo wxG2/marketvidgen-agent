@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import shutil
@@ -8,6 +9,8 @@ import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from app.agents.core.base import AgentContext, AgentResult, BaseAgent
 from app.agents.stages.remix_planner import validate_remix_plan
@@ -84,6 +87,17 @@ class RemixAssemblerAgent(BaseAgent):
                     self._extract_segment(source_paths[str(seg.get("source_video_id"))], seg, idx, temp_dir, include_audio)
                     for idx, seg in enumerate(segments)
                 ]
+            )
+
+            clip_durations = await asyncio.gather(
+                *[_probe_duration(self.ffmpeg_bin, p, run_subprocess) for p in clip_paths]
+            )
+            total_clips_duration = sum(d or 0.0 for d in clip_durations)
+            logger.info(
+                "remix clip extraction: %d clips, durations=%s, total=%.3fs",
+                len(clip_paths),
+                [round(d or 0.0, 2) for d in clip_durations],
+                total_clips_duration,
             )
 
             await context.report_progress("正在拼接混剪片段...", agent_name=self.name)
@@ -515,7 +529,8 @@ class RemixAssemblerAgent(BaseAgent):
                         "yuv420p",
                         "-c:a",
                         "aac",
-                        "-shortest",
+                        "-t",
+                        f"{video_duration:.3f}",
                         output_path,
                     ])
                     rc, _, stderr = await run_subprocess(*args)

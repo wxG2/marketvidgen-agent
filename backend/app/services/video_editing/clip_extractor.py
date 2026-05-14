@@ -81,6 +81,7 @@ class ClipExtractorService:
             rc, _, stderr = await run_subprocess(*silent_args)
         if rc != 0:
             raise RuntimeError(f"ffmpeg clip extraction failed: {stderr}")
-        if not Path(output_path).exists():
-            raise RuntimeError("ffmpeg clip extraction did not produce output")
+        output = Path(output_path)
+        if not output.exists() or output.stat().st_size == 0:
+            raise RuntimeError(f"ffmpeg clip extraction produced empty output: {output_path}")
         return output_path

@@ -191,7 +191,7 @@ async def _first_session_audio_material_id(
     result = await db.execute(
         select(Material.id)
         .where(Material.user_id == user_id, Material.media_type == "audio")
-        .order_by(Material.created_at.desc())
+        .order_by(Material.indexed_at.desc())
         .limit(1)
     )
     return result.scalars().first()
