@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.models.auto_chat import AutoSessionMaterialSelection
 from app.models.material import Material
 from app.models.video_upload import VideoUpload
-from app.prompts import REMIX_PLANNING_PROMPT, REMIX_SHOT_ANALYSIS_PROMPT
+from app.prompts import REMIX_PLANNING_PROMPT, REMIX_SHOT_ANALYSIS_PROMPT, REMIX_VOICEOVER_PROMPT
 from app.services.llm_service import LLMService
 from app.services.media_utils import run_subprocess
 from app.services.video_editing.helpers import _probe_duration
@@ -74,6 +74,13 @@ class RemixPlannerAgent(BaseAgent):
                 usage_records.append(plan_usage)
 
             plan = self._normalize_plan(plan, profiles, working_input)
+
+            if _remix_add_voiceover(working_input):
+                await context.report_progress("正在生成镜头旁白文案...", agent_name=self.name)
+                vo_usage = await self._enrich_voiceovers(plan.get("segments", []), working_input)
+                if vo_usage:
+                    usage_records.append(vo_usage)
+
             validation_error = validate_remix_plan(plan)
             if validation_error:
                 return AgentResult(success=False, output_data={}, error=f"混剪方案校验失败: {validation_error}")
@@ -505,6 +512,86 @@ class RemixPlannerAgent(BaseAgent):
             return min(video_shots, key=lambda shot: abs(shot.start_seconds - start))
         return None
 
+    async def _enrich_voiceovers(
+        self,
+        segments: list[dict[str, Any]],
+        input_data: dict,
+    ) -> dict[str, Any] | None:
+        """Generate LLM voiceovers for each segment based on actual shot content and user intent.
+
+        Runs after _materialize_segments so shot descriptions and emotion tags are available.
+        Falls back silently to template voiceovers already in segments if LLM call fails.
+        """
+        vo_segments = [seg for seg in segments if "voiceover" in seg]
+        if not vo_segments:
+            return None
+
+        user_intent = str(input_data.get("script") or "").strip()
+        payload = {
+            "user_intent": user_intent,
+            "segments": [
+                {
+                    "segment_idx": seg["segment_idx"],
+                    "role": seg.get("role", "buildup"),
+                    "description": seg.get("description", ""),
+                    "emotion_tag": seg.get("emotion_tag", "neutral"),
+                    "duration_seconds": round(
+                        float(seg.get("end_seconds", 0)) - float(seg.get("start_seconds", 0)), 2
+                    ),
+                }
+                for seg in vo_segments
+            ],
+        }
+        schema = {
+            "name": "remix_voiceovers",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "segments": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "segment_idx": {"type": "integer"},
+                                "voiceover": {"type": "string"},
+                            },
+                            "required": ["segment_idx", "voiceover"],
+                        },
+                    }
+                },
+                "required": ["segments"],
+            },
+        }
+        try:
+            result, usage = await self.llm.generate_structured(
+                system_prompt=REMIX_VOICEOVER_PROMPT,
+                user_prompt=json.dumps(payload, ensure_ascii=False),
+                schema=schema,
+            )
+            vo_map = {
+                int(item.get("segment_idx", -1)): str(item.get("voiceover", "")).strip()
+                for item in result.get("segments", [])
+            }
+            used: set[str] = set()
+            for seg in segments:
+                if "voiceover" not in seg:
+                    continue
+                idx = int(seg["segment_idx"])
+                vo = vo_map.get(idx, "")
+                if (
+                    vo
+                    and 6 <= len(vo) <= 80
+                    and not _is_image_description(vo)
+                    and not _looks_like_description(vo, seg.get("description", ""))
+                    and vo not in used
+                ):
+                    seg["voiceover"] = vo
+                    used.add(vo)
+            return self._usage("remix_voiceover", usage)
+        except Exception as exc:
+            logger.warning("Voiceover enrichment LLM call failed, keeping template voiceovers: %s", exc)
+            return None
+
     def _shot_priority_score(self, shot: ShotProfile, llm_boost: float = 0.0) -> float:
         emotion = str(shot.emotion_tag or "").strip().lower()
         quality = _clamp_float(shot.visual_quality_score, 0.0, 10.0, 6.0)
@@ -657,6 +744,7 @@ class RemixPlannerAgent(BaseAgent):
                 "start_seconds": round(shot.start_seconds, 3),
                 "end_seconds": round(shot.end_seconds, 3),
                 "description": description,
+                "emotion_tag": str(shot.emotion_tag or "neutral"),
                 "role": _role_for_index(idx, len(selected_candidates)),
                 "quality_score": _clamp_float(shot.visual_quality_score, 1.0, 10.0, 6.0),
                 "transition_to_next": transition_to_next,
