@@ -527,6 +527,7 @@ class RemixPlannerAgent(BaseAgent):
             return None
 
         user_intent = str(input_data.get("script") or "").strip()
+        _TTS_CHARS_PER_SECOND = 4.5
         payload = {
             "user_intent": user_intent,
             "segments": [
@@ -538,6 +539,10 @@ class RemixPlannerAgent(BaseAgent):
                     "duration_seconds": round(
                         float(seg.get("end_seconds", 0)) - float(seg.get("start_seconds", 0)), 2
                     ),
+                    "max_chars": max(8, int(
+                        (float(seg.get("end_seconds", 0)) - float(seg.get("start_seconds", 0)))
+                        * _TTS_CHARS_PER_SECOND
+                    )),
                 }
                 for seg in vo_segments
             ],
