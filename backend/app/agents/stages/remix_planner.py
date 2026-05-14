@@ -610,50 +610,65 @@ class RemixPlannerAgent(BaseAgent):
         profiles: list[VideoProfile],
         max_ratio: float = 0.6,
     ) -> list[dict[str, Any]]:
-        """Ensure no single source video dominates more than max_ratio of selected segments."""
+        """Ensure every source video contributes at least 1 segment, and no single
+        video dominates more than max_ratio of selected segments."""
         if len(selected) < 2 or len(profiles) < 2:
             return selected
 
         from collections import Counter
         video_counts: Counter = Counter(item["shot"].video_id for item in selected)
-        total = len(selected)
-        dominant_id, dominant_count = video_counts.most_common(1)[0]
-        if dominant_count / total <= max_ratio:
-            return selected
 
-        # Find candidates from under-represented videos to swap in
-        all_eligible = {
-            p.video_id: sorted(p.shots, key=lambda s: s.visual_quality_score, reverse=True)
-            for p in profiles
-            if p.video_id != dominant_id and p.shots
-        }
-        if not all_eligible:
-            return selected
-
-        max_allowed = max(1, int(total * max_ratio))
-        excess = dominant_count - max_allowed
-
+        # Pass 1: Guarantee each source video has at least 1 segment.
+        # For any absent video, swap out the weakest segment from the currently dominant video.
         result = list(selected)
-        dominant_indices = [
-            i for i, item in enumerate(result) if item["shot"].video_id == dominant_id
-        ]
-        # Swap lowest-scored dominant shots with best shots from other videos
-        dominant_indices.sort(
-            key=lambda i: result[i]["shot"].visual_quality_score
-        )
-        swapped = 0
-        for alt_shots in all_eligible.values():
-            if swapped >= excess:
-                break
-            for alt_shot in alt_shots:
-                if swapped >= excess or not dominant_indices:
-                    break
-                swap_idx = dominant_indices.pop(0)
-                swap_item = dict(result[swap_idx])
-                swap_item["shot"] = alt_shot
-                swap_item["raw_segment"] = {}
-                result[swap_idx] = swap_item
-                swapped += 1
+        for profile in profiles:
+            if video_counts.get(profile.video_id, 0) > 0:
+                continue
+            if not profile.shots:
+                continue
+            best_alt = max(profile.shots, key=lambda s: s.visual_quality_score)
+            dominant_id = video_counts.most_common(1)[0][0]
+            dominant_indices = sorted(
+                [i for i, item in enumerate(result) if item["shot"].video_id == dominant_id],
+                key=lambda i: result[i]["shot"].visual_quality_score,
+            )
+            if not dominant_indices:
+                continue
+            swap_idx = dominant_indices[0]
+            swap_item = dict(result[swap_idx])
+            swap_item["shot"] = best_alt
+            swap_item["raw_segment"] = {}
+            result[swap_idx] = swap_item
+            video_counts[dominant_id] -= 1
+            video_counts[profile.video_id] = video_counts.get(profile.video_id, 0) + 1
+
+        # Pass 2: Prevent any single video from exceeding max_ratio.
+        total = len(result)
+        dominant_id2, dominant_count2 = video_counts.most_common(1)[0]
+        if dominant_count2 / total > max_ratio:
+            all_eligible = {
+                p.video_id: sorted(p.shots, key=lambda s: s.visual_quality_score, reverse=True)
+                for p in profiles
+                if p.video_id != dominant_id2 and p.shots
+            }
+            max_allowed = max(1, int(total * max_ratio))
+            excess = dominant_count2 - max_allowed
+            dominant_indices2 = sorted(
+                [i for i, item in enumerate(result) if item["shot"].video_id == dominant_id2],
+                key=lambda i: result[i]["shot"].visual_quality_score,
+            )
+            swapped = 0
+            for alt_shots in all_eligible.values():
+                for alt_shot in alt_shots:
+                    if swapped >= excess or not dominant_indices2:
+                        break
+                    swap_idx = dominant_indices2.pop(0)
+                    swap_item = dict(result[swap_idx])
+                    swap_item["shot"] = alt_shot
+                    swap_item["raw_segment"] = {}
+                    result[swap_idx] = swap_item
+                    swapped += 1
+
         return result
 
     def _select_segment_candidates(self, candidates: list[dict[str, Any]], target_duration: float) -> list[dict[str, Any]]:
