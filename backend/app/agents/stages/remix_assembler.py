@@ -59,6 +59,11 @@ class RemixAssemblerAgent(BaseAgent):
         if not segments:
             return AgentResult(success=False, output_data={}, error="混剪方案中没有可用片段")
 
+        # Clamp transition_durations to be consistent with current segment durations.
+        # timing adjustment (align_remix_plan_to_audio) may compress/extend segments
+        # without updating transition_duration, causing validation to fail.
+        _clamp_transition_durations(segments)
+
         validation_error = validate_remix_plan(
             {
                 **plan,
@@ -757,6 +762,31 @@ def _clamp_float(value: Any, low: float, high: float, default: float) -> float:
     except (TypeError, ValueError):
         numeric = default
     return max(low, min(high, numeric))
+
+
+def _clamp_transition_durations(segments: list[dict]) -> None:
+    """Re-validate and clamp transition_duration values in-place.
+
+    Called before validate_remix_plan so that segments whose durations were
+    changed by timing adjustment (compress/extend) do not fail validation
+    due to stale transition_duration values.
+    """
+    active = [s for s in segments if isinstance(s, dict) and not s.get("removed")]
+    for idx, segment in enumerate(active[:-1]):
+        transition = str(segment.get("transition_to_next") or "cut")
+        if transition == "cut":
+            continue
+        dur_this = _segment_duration(segment)
+        dur_next = _segment_duration(active[idx + 1])
+        max_transition = min(dur_this, dur_next) * 0.35
+        if max_transition < 0.1:
+            segment["transition_to_next"] = "cut"
+            segment["transition_duration"] = 0.0
+        else:
+            allowed = round(min(1.0, max_transition), 3)
+            td = round(float(segment.get("transition_duration") or 0.0), 3)
+            if td > allowed:
+                segment["transition_duration"] = allowed
 
 
 def _clamped_subtitle_segments(subtitle_path: str, video_duration: float) -> list[dict]:
