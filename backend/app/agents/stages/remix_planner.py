@@ -893,16 +893,17 @@ def validate_remix_plan(
         transition = _transition(segment.get("transition_to_next"))
         if transition == "cut":
             continue
-        transition_duration = _safe_float(segment.get("transition_duration")) or 0.0
+        transition_duration = round(_safe_float(segment.get("transition_duration")) or 0.0, 3)
         max_transition = min(durations[idx], durations[idx + 1]) * 0.35
         if max_transition < 0.1:
             return f"第 {idx + 1} 个片段时长过短，不支持 {transition} 转场"
         if transition_duration <= 0:
             return f"第 {idx + 1} 个片段 {transition} 转场时长必须大于 0"
-        if transition_duration > min(1.0, max_transition) + 1e-6:
+        max_transition_rounded = round(min(1.0, max_transition), 3)
+        if transition_duration > max_transition_rounded:
             return (
                 f"第 {idx + 1} 个片段转场时长 {transition_duration:.3f}s 过大，"
-                f"应不超过 {min(1.0, max_transition):.3f}s"
+                f"应不超过 {max_transition_rounded:.3f}s"
             )
 
     target_duration = _safe_float(plan.get("target_duration_seconds"))
