@@ -56,17 +56,16 @@ class MockTTSService(TTSService):
         os.makedirs(self.output_dir, exist_ok=True)
         subtitle_path = os.path.join(self.output_dir, f"sub_{uuid.uuid4().hex[:8]}.srt")
 
-        # Split text into segments and create basic SRT
-        segments = [s.strip() for s in text.replace("。", "。\n").replace("！", "！\n").replace("？", "？\n").split("\n") if s.strip()]
-        srt_content = []
-        time_cursor_ms = 0
-        segment_duration_ms = 3000
+        segments = _split_subtitle_blocks(text)
+        if not segments:
+            segments = [text.strip() or " "]
 
-        for i, segment in enumerate(segments, 1):
-            start = self._ms_to_srt_time(time_cursor_ms)
-            end = self._ms_to_srt_time(time_cursor_ms + segment_duration_ms)
-            srt_content.append(f"{i}\n{start} --> {end}\n{segment}\n")
-            time_cursor_ms += segment_duration_ms
+        # Try ffprobe for real duration, fall back to char estimate
+        total_duration_ms = await _probe_audio_duration_ms(audio_path)
+        if total_duration_ms is None:
+            total_duration_ms = max(len(text), 1) * 150
+
+        srt_content = _build_srt_entries(segments, total_duration_ms)
 
         with open(subtitle_path, "w", encoding="utf-8") as f:
             f.write("\n".join(srt_content))
@@ -155,19 +154,16 @@ class RealTTSService(TTSService):
     async def generate_subtitles(self, text: str, audio_path: str) -> str:
         os.makedirs(self.output_dir, exist_ok=True)
         subtitle_path = os.path.join(self.output_dir, f"sub_{uuid.uuid4().hex[:8]}.srt")
-        segments = [s.strip() for s in text.replace("。", "。\n").replace("！", "！\n").replace("？", "？\n").split("\n") if s.strip()]
+        segments = _split_subtitle_blocks(text)
         if not segments:
             segments = [text.strip() or " "]
 
-        total_duration_ms = max(len(text), 1) * 150
-        segment_duration_ms = max(total_duration_ms // len(segments), 1000)
-        cursor = 0
-        lines = []
-        for idx, segment in enumerate(segments, start=1):
-            start = self._ms_to_srt_time(cursor)
-            end = self._ms_to_srt_time(cursor + segment_duration_ms)
-            lines.append(f"{idx}\n{start} --> {end}\n{segment}\n")
-            cursor += segment_duration_ms
+        # Try ffprobe for real duration, fall back to char estimate
+        total_duration_ms = await _probe_audio_duration_ms(audio_path)
+        if total_duration_ms is None:
+            total_duration_ms = max(len(text), 1) * 150
+
+        lines = _build_srt_entries(segments, total_duration_ms)
 
         with open(subtitle_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
@@ -180,3 +176,157 @@ class RealTTSService(TTSService):
         seconds = (ms % 60000) // 1000
         millis = ms % 1000
         return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
+
+
+# ── Shared subtitle helpers ────────────────────────────────────────────────────
+
+_MAX_SUBTITLE_BLOCK_CHARS = 24
+_MIN_SUBTITLE_BLOCK_CHARS = 8
+
+_SENTENCE_BREAKS = {"。", "！", "？", "；", "，", "、", "\n"}
+_CLAUSE_BREAKS = {"，", "、", "；"}
+
+
+async def _probe_audio_duration_ms(audio_path: str) -> int | None:
+    """Probe audio file duration in milliseconds using ffprobe. Returns None on failure."""
+    if not audio_path or not os.path.exists(audio_path):
+        return None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+            "-of", "csv=p=0", audio_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode == 0:
+            return int(float(stdout.decode().strip()) * 1000)
+    except Exception:
+        pass
+    return None
+
+
+def _split_subtitle_blocks(text: str) -> list[str]:
+    """Split text into subtitle blocks of 14-24 CJK chars each.
+
+    Splits on sentence-ending punctuation first, then on clause breaks
+    for blocks that are still too long. Never produces blocks with ellipsis.
+    """
+    if not text or not text.strip():
+        return []
+
+    # Step 1: Split on major sentence breaks
+    raw_segments: list[str] = []
+    current = ""
+    for ch in text:
+        current += ch
+        if ch in _SENTENCE_BREAKS:
+            raw_segments.append(current)
+            current = ""
+    if current.strip():
+        raw_segments.append(current)
+
+    # Step 2: Merge short segments and split long ones
+    result: list[str] = []
+    buffer = ""
+    for seg in raw_segments:
+        stripped = seg.strip()
+        if not stripped:
+            continue
+        candidate = (buffer + stripped).strip()
+        if len(candidate) <= _MAX_SUBTITLE_BLOCK_CHARS:
+            buffer = candidate
+        else:
+            if buffer.strip():
+                result.append(buffer.strip())
+            if len(stripped) > _MAX_SUBTITLE_BLOCK_CHARS:
+                sub_blocks = _split_long_block(stripped)
+                if sub_blocks:
+                    result.extend(sub_blocks[:-1])
+                    buffer = sub_blocks[-1]
+                else:
+                    buffer = stripped
+            else:
+                buffer = stripped
+
+    if buffer.strip():
+        result.append(buffer.strip())
+
+    # Step 3: Final safety split for any remaining long blocks
+    final: list[str] = []
+    for block in result:
+        if len(block) > _MAX_SUBTITLE_BLOCK_CHARS:
+            final.extend(_split_long_block(block))
+        else:
+            final.append(block)
+
+    return [b for b in final if b.strip()]
+
+
+def _split_long_block(text: str) -> list[str]:
+    """Split an over-long block at natural boundaries into readable pieces."""
+    parts: list[str] = []
+    current = ""
+    for ch in text:
+        current += ch
+        if ch in _SENTENCE_BREAKS and len(current) >= _MIN_SUBTITLE_BLOCK_CHARS:
+            parts.append(current)
+            current = ""
+        elif len(current) >= _MAX_SUBTITLE_BLOCK_CHARS:
+            split_point = len(current)
+            for clause_char in _CLAUSE_BREAKS:
+                search_start = max(_MIN_SUBTITLE_BLOCK_CHARS, len(current) - 8)
+                pos = current.rfind(clause_char, search_start, len(current))
+                if pos > 0:
+                    split_point = pos + 1
+                    break
+            parts.append(current[:split_point])
+            current = current[split_point:]
+    if current.strip():
+        parts.append(current)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _build_srt_entries(segments: list[str], total_duration_ms: int) -> list[str]:
+    """Build SRT entries with time distributed proportionally by text length."""
+    if not segments:
+        return []
+
+    total_chars = sum(len(seg) for seg in segments)
+    if total_chars <= 0:
+        total_chars = len(segments)
+
+    min_duration_ms = 800
+    available_ms = max(total_duration_ms, len(segments) * min_duration_ms)
+
+    base_allocations = [min_duration_ms] * len(segments)
+    remaining = available_ms - sum(base_allocations)
+    char_lengths = [len(seg) for seg in segments]
+    total_chars_for_extra = sum(char_lengths) or 1
+
+    lines = []
+    cursor_ms = 0
+    for idx, (seg, base_ms) in enumerate(zip(segments, base_allocations), start=1):
+        extra = int(remaining * char_lengths[idx - 1] / total_chars_for_extra) if remaining > 0 else 0
+        seg_duration_ms = base_ms + extra
+
+        start = _format_srt_time(cursor_ms)
+        end = _format_srt_time(cursor_ms + seg_duration_ms)
+        lines.append(f"{idx}\n{start} --> {end}\n{seg}\n")
+        cursor_ms += seg_duration_ms
+
+    # Clamp last entry end to total duration
+    if lines:
+        last_end = _format_srt_time(total_duration_ms)
+        idx_sep = lines[-1].rfind(" --> ")
+        nl_sep = lines[-1].index("\n", idx_sep + 5)
+        lines[-1] = lines[-1][:idx_sep + 5] + last_end + lines[-1][nl_sep:]
+
+    return lines
+
+
+def _format_srt_time(ms: int) -> str:
+    hours = ms // 3600000
+    minutes = (ms % 3600000) // 60000
+    seconds = (ms % 60000) // 1000
+    millis = ms % 1000
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"

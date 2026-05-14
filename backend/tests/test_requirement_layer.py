@@ -1,6 +1,6 @@
 """Modular tests for the requirement-parsing layer.
 
-Covers: requirement_utils helpers and RequirementParserAgent (mocked LLM).
+Covers: requirement_utils helpers used by OrchestratorAgent.
 No video generation, no database, no external calls.
 """
 from __future__ import annotations

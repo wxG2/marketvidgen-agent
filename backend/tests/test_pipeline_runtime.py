@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest_asyncio
@@ -14,10 +15,12 @@ from app.core.security import get_current_user
 from app.agents.pipeline import PipelineExecutor
 from app.db.session import Base, get_db
 from app.models import *  # noqa: F401,F403
+from app.models.auto_chat import AutoChatSession, AutoSessionMaterialSelection
+from app.models.material import Material
 from app.models.pipeline import AgentExecution, PipelineRun
 from app.models.user import User
+from app.models.video_upload import VideoUpload
 from app.routers.pipeline import get_pipeline_router
-from app.services.usage_service import UsageRecorder
 import app.routers.pipeline as pipeline_router_module
 
 
@@ -360,6 +363,489 @@ async def test_standard_pipeline_does_not_create_requirement_parser_execution(
 
     assert "requirement_parser" not in agent_names
     assert "orchestrator" in agent_names
+
+
+async def test_remix_pipeline_waits_for_confirmation_then_assembles(pipeline_client, project_id, session_factory):
+    async def remix_planner_behavior(_context, _input_data, _call):
+        return AgentResult(
+            success=True,
+            output_data={
+                "requires_confirmation": True,
+                "remix_plan": {
+                    "title": "test remix",
+                    "segments": [
+                        {
+                            "segment_idx": 0,
+                            "source_video_id": "video-a",
+                            "start_seconds": 0,
+                            "end_seconds": 2,
+                            "transition_to_next": "cut",
+                        }
+                    ],
+                    "audio_design": {"strategy": "silent", "bgm_mood": "none", "bgm_volume": 0.0},
+                },
+            },
+        )
+
+    async def remix_assembler_behavior(_context, input_data, _call):
+        assert input_data["remix_plan"]["title"] == "test remix"
+        return AgentResult(success=True, output_data={"final_video_path": "/tmp/remix.mp4", "duration_ms": 2000})
+
+    executor = make_executor(session_factory)
+    executor.remix_planner = CountingAgent("remix_planner", remix_planner_behavior)
+    executor.remix_assembler = CountingAgent("remix_assembler", remix_assembler_behavior)
+    client = await pipeline_client(executor)
+    async with session_factory() as session:
+        session.add_all([
+            VideoUpload(
+                id="video-a",
+                project_id=project_id,
+                filename="video-a.mp4",
+                file_path="/tmp/video-a.mp4",
+                file_size=100,
+                mime_type="video/mp4",
+            ),
+            VideoUpload(
+                id="video-b",
+                project_id=project_id,
+                filename="video-b.mp4",
+                file_path="/tmp/video-b.mp4",
+                file_size=100,
+                mime_type="video/mp4",
+            ),
+        ])
+        await session.commit()
+
+    response = await client.post(
+        f"/api/projects/{project_id}/pipeline",
+        json={
+            "script": "remix these clips",
+            "image_ids": [],
+            "reference_video_ids": ["video-a", "video-b"],
+            "review_prompts": False,
+        },
+    )
+    assert response.status_code == 200
+    run = response.json()
+    await _wait_for_status(session_factory, run["id"], "waiting_remix_confirmation")
+
+    confirm = await client.post(
+        f"/api/projects/{project_id}/pipeline/{run['id']}/confirm-remix",
+        json={"approved": True, "edited_segments": []},
+    )
+    assert confirm.status_code == 200
+    completed = await _wait_for_status(session_factory, run["id"], "completed")
+
+    assert completed.final_video_path == "/tmp/remix.mp4"
+    assert executor.remix_planner.calls == 1
+    assert executor.remix_assembler.calls == 1
+    assert executor.video_gen_agent.calls == 0
+
+
+async def test_remix_voiceover_uses_audio_subtitle_agent(pipeline_client, project_id, session_factory):
+    async def remix_planner_behavior(_context, _input_data, _call):
+        return AgentResult(
+            success=True,
+            output_data={
+                "requires_confirmation": True,
+                "remix_plan": {
+                    "title": "test remix",
+                    "segments": [
+                        {
+                            "segment_idx": 0,
+                            "source_video_id": "video-a",
+                            "start_seconds": 0,
+                            "end_seconds": 2,
+                            "description": "第一段展示产品亮点。",
+                            "voiceover": "第一段展示产品亮点。",
+                            "transition_to_next": "cut",
+                        }
+                    ],
+                    "audio_design": {"strategy": "silent", "voice_id": "warm", "voice_speed": 1.2},
+                },
+            },
+        )
+
+    async def audio_behavior(_context, input_data, _call):
+        assert input_data["script"] == "第一段展示产品亮点。"
+        assert input_data["voice_params"]["voice_id"] == "warm"
+        assert input_data["voice_params"]["speed"] == 1.2
+        return AgentResult(
+            success=True,
+            output_data={
+                "audio_path": "/tmp/remix-voice.mp3",
+                "subtitle_path": "/tmp/remix-subtitle.srt",
+                "duration_ms": 2000,
+            },
+        )
+
+    async def remix_assembler_behavior(_context, input_data, _call):
+        assert input_data["audio"]["audio_path"] == "/tmp/remix-voice.mp3"
+        assert input_data["audio"]["subtitle_path"] == "/tmp/remix-subtitle.srt"
+        return AgentResult(success=True, output_data={"final_video_path": "/tmp/remix.mp4", "duration_ms": 2000})
+
+    executor = make_executor(session_factory)
+    executor.remix_planner = CountingAgent("remix_planner", remix_planner_behavior)
+    executor.audio_agent = CountingAgent("audio_subtitle", audio_behavior)
+    executor.remix_assembler = CountingAgent("remix_assembler", remix_assembler_behavior)
+    client = await pipeline_client(executor)
+    async with session_factory() as session:
+        session.add_all([
+            VideoUpload(
+                id="video-a",
+                project_id=project_id,
+                filename="video-a.mp4",
+                file_path="/tmp/video-a.mp4",
+                file_size=100,
+                mime_type="video/mp4",
+            ),
+            VideoUpload(
+                id="video-b",
+                project_id=project_id,
+                filename="video-b.mp4",
+                file_path="/tmp/video-b.mp4",
+                file_size=100,
+                mime_type="video/mp4",
+            ),
+        ])
+        await session.commit()
+
+    response = await client.post(
+        f"/api/projects/{project_id}/pipeline",
+        json={
+            "script": "remix these clips",
+            "image_ids": [],
+            "reference_video_ids": ["video-a", "video-b"],
+            "remix_config": {"add_voiceover": True, "bgm_mood": "none"},
+            "review_prompts": False,
+        },
+    )
+    assert response.status_code == 200
+    run = response.json()
+    await _wait_for_status(session_factory, run["id"], "waiting_remix_confirmation")
+
+    confirm = await client.post(
+        f"/api/projects/{project_id}/pipeline/{run['id']}/confirm-remix",
+        json={"approved": True, "edited_segments": []},
+    )
+    assert confirm.status_code == 200
+    await _wait_for_status(session_factory, run["id"], "completed")
+
+    assert executor.audio_agent.calls == 1
+    assert executor.remix_assembler.calls == 1
+    assert executor.video_gen_agent.calls == 0
+
+
+async def test_remix_voiceover_replans_when_audio_exceeds_selected_segments(
+    pipeline_client,
+    project_id,
+    session_factory,
+):
+    async def remix_planner_behavior(_context, input_data, call):
+        if call == 2:
+            # Video-priority: replan target = min(audio_duration, voiceover_cap)
+            # voiceover_cap = min(4.0 * 1.2, 4.0 + 6.0) = 4.8
+            assert input_data["remix_config"]["target_duration_seconds"] == 4.8
+            assert "素材不足" in input_data["remix_adjustment_feedback"]
+            return AgentResult(
+                success=True,
+                output_data={
+                    "requires_confirmation": True,
+                    "remix_plan": {
+                        "title": "replanned remix",
+                        "segments": [
+                            {
+                                "segment_idx": 0,
+                                "source_video_id": "video-a",
+                                "start_seconds": 0,
+                                "end_seconds": 4,
+                                "voiceover": "第一段。",
+                                "transition_to_next": "cut",
+                            },
+                            {
+                                "segment_idx": 1,
+                                "source_video_id": "video-b",
+                                "start_seconds": 0,
+                                "end_seconds": 4,
+                                "voiceover": "第二段。",
+                                "transition_to_next": "cut",
+                            },
+                        ],
+                        "audio_design": {"strategy": "silent", "bgm_mood": "none", "bgm_volume": 0.0},
+                    },
+                    "video_profiles": [
+                        {"video_id": "video-a", "duration_seconds": 8.0},
+                        {"video_id": "video-b", "duration_seconds": 8.0},
+                    ],
+                },
+            )
+        return AgentResult(
+            success=True,
+            output_data={
+                "requires_confirmation": True,
+                "remix_plan": {
+                    "title": "initial remix",
+                    "segments": [
+                        {
+                            "segment_idx": 0,
+                            "source_video_id": "video-a",
+                            "start_seconds": 0,
+                            "end_seconds": 2,
+                            "voiceover": "第一段。",
+                            "transition_to_next": "cut",
+                        },
+                        {
+                            "segment_idx": 1,
+                            "source_video_id": "video-b",
+                            "start_seconds": 0,
+                            "end_seconds": 2,
+                            "voiceover": "第二段。",
+                            "transition_to_next": "cut",
+                        },
+                    ],
+                    "audio_design": {"strategy": "silent", "bgm_mood": "none", "bgm_volume": 0.0},
+                },
+                "video_profiles": [
+                    {"video_id": "video-a", "duration_seconds": 1.5},
+                    {"video_id": "video-b", "duration_seconds": 1.5},
+                ],
+            },
+        )
+
+    async def audio_behavior(_context, input_data, _call):
+        assert input_data["script"] == "第一段。\n第二段。"
+        return AgentResult(
+            success=True,
+            output_data={
+                "audio_path": "/tmp/remix-voice-long.mp3",
+                "subtitle_path": "/tmp/remix-subtitle-long.srt",
+                "duration_ms": 8000,
+            },
+        )
+
+    async def remix_assembler_behavior(_context, _input_data, _call):
+        raise AssertionError("assembler should wait for the replanned remix confirmation")
+
+    executor = make_executor(session_factory)
+    executor.remix_planner = CountingAgent("remix_planner", remix_planner_behavior)
+    executor.audio_agent = CountingAgent("audio_subtitle", audio_behavior)
+    executor.remix_assembler = CountingAgent("remix_assembler", remix_assembler_behavior)
+    client = await pipeline_client(executor)
+    async with session_factory() as session:
+        session.add_all([
+            VideoUpload(
+                id="video-a",
+                project_id=project_id,
+                filename="video-a.mp4",
+                file_path="/tmp/video-a.mp4",
+                file_size=100,
+                mime_type="video/mp4",
+            ),
+            VideoUpload(
+                id="video-b",
+                project_id=project_id,
+                filename="video-b.mp4",
+                file_path="/tmp/video-b.mp4",
+                file_size=100,
+                mime_type="video/mp4",
+            ),
+        ])
+        await session.commit()
+
+    response = await client.post(
+        f"/api/projects/{project_id}/pipeline",
+        json={
+            "script": "remix these clips",
+            "image_ids": [],
+            "reference_video_ids": ["video-a", "video-b"],
+            "remix_config": {"add_voiceover": True, "bgm_mood": "none"},
+            "review_prompts": False,
+        },
+    )
+    assert response.status_code == 200
+    run = response.json()
+    await _wait_for_status(session_factory, run["id"], "waiting_remix_confirmation")
+
+    confirm = await client.post(
+        f"/api/projects/{project_id}/pipeline/{run['id']}/confirm-remix",
+        json={"approved": True, "edited_segments": []},
+    )
+    assert confirm.status_code == 200
+
+    deadline = asyncio.get_event_loop().time() + 3.0
+    replanned = None
+    while asyncio.get_event_loop().time() < deadline:
+        if executor.remix_planner.calls >= 2:
+            async with session_factory() as session:
+                replanned = await session.get(PipelineRun, run["id"])
+                if replanned and replanned.status == "waiting_remix_confirmation":
+                    break
+        await asyncio.sleep(0.05)
+    assert replanned is not None
+    assert replanned.status == "waiting_remix_confirmation"
+    assert executor.audio_agent.calls == 1
+    assert executor.remix_assembler.calls == 0
+
+    snapshot = json.loads(replanned.artifacts_snapshot)
+    assert snapshot["remix_plan"]["title"] == "replanned remix"
+    assert snapshot["audio"]["_reuse_for_audio_aligned_remix"] is True
+    saved_input = json.loads(replanned.input_config)
+    assert saved_input["remix_config"]["target_duration_seconds"] == 4.8
+
+
+async def test_remix_launch_uses_first_session_audio_as_bgm(pipeline_client, project_id, session_factory):
+    async def remix_planner_behavior(_context, input_data, _call):
+        assert input_data["remix_config"]["bgm_material_id"] == "audio-1"
+        return AgentResult(
+            success=True,
+            output_data={
+                "requires_confirmation": True,
+                "remix_plan": {
+                    "title": "test remix",
+                    "segments": [
+                        {
+                            "segment_idx": 0,
+                            "source_video_id": "video-a",
+                            "source_shot_idx": 0,
+                            "start_seconds": 0,
+                            "end_seconds": 2,
+                            "transition_to_next": "cut",
+                        }
+                    ],
+                    "audio_design": {"strategy": "bgm_only", "bgm_source": "uploaded", "bgm_material_id": "audio-1"},
+                },
+            },
+        )
+
+    executor = make_executor(session_factory)
+    executor.remix_planner = CountingAgent("remix_planner", remix_planner_behavior)
+    client = await pipeline_client(executor)
+    async with session_factory() as session:
+        session.add(AutoChatSession(id="session-1", project_id=project_id, user_id="test-user"))
+        session.add_all([
+            Material(
+                id="audio-1",
+                user_id="test-user",
+                category="音乐",
+                filename="bgm.mp3",
+                file_path="test-user/音乐/bgm.mp3",
+                media_type="audio",
+            ),
+            AutoSessionMaterialSelection(
+                session_id="session-1",
+                material_id="audio-1",
+                sort_order=0,
+            ),
+            VideoUpload(
+                id="video-a",
+                project_id=project_id,
+                filename="video-a.mp4",
+                file_path="/tmp/video-a.mp4",
+                file_size=100,
+                mime_type="video/mp4",
+            ),
+            VideoUpload(
+                id="video-b",
+                project_id=project_id,
+                filename="video-b.mp4",
+                file_path="/tmp/video-b.mp4",
+                file_size=100,
+                mime_type="video/mp4",
+            ),
+        ])
+        await session.commit()
+
+    response = await client.post(
+        f"/api/projects/{project_id}/pipeline",
+        json={
+            "script": "remix these clips",
+            "session_id": "session-1",
+            "image_ids": [],
+            "reference_video_ids": ["video-a", "video-b"],
+            "remix_config": {"bgm_mood": "cinematic"},
+            "review_prompts": False,
+        },
+    )
+    assert response.status_code == 200
+    await _wait_for_status(session_factory, response.json()["id"], "waiting_remix_confirmation")
+
+
+async def test_remix_launch_rejects_non_audio_bgm_material(pipeline_client, project_id, session_factory):
+    executor = make_executor(session_factory)
+    client = await pipeline_client(executor)
+    async with session_factory() as session:
+        session.add_all([
+            Material(
+                id="image-1",
+                user_id="test-user",
+                category="素材",
+                filename="image.png",
+                file_path="test-user/素材/image.png",
+                media_type="image",
+            ),
+            VideoUpload(
+                id="video-a",
+                project_id=project_id,
+                filename="video-a.mp4",
+                file_path="/tmp/video-a.mp4",
+                file_size=100,
+                mime_type="video/mp4",
+            ),
+            VideoUpload(
+                id="video-b",
+                project_id=project_id,
+                filename="video-b.mp4",
+                file_path="/tmp/video-b.mp4",
+                file_size=100,
+                mime_type="video/mp4",
+            ),
+        ])
+        await session.commit()
+
+    response = await client.post(
+        f"/api/projects/{project_id}/pipeline",
+        json={
+            "script": "remix these clips",
+            "image_ids": [],
+            "reference_video_ids": ["video-a", "video-b"],
+            "remix_config": {"bgm_material_id": "image-1"},
+            "review_prompts": False,
+        },
+    )
+    assert response.status_code == 400
+    assert "BGM material must be an audio file" in response.json()["detail"]
+
+
+async def test_pipeline_rejects_reference_video_from_other_project(pipeline_client, project_id, session_factory):
+    from app.models.project import Project
+
+    executor = make_executor(session_factory)
+    client = await pipeline_client(executor)
+    async with session_factory() as session:
+        other_project = Project(name="Other Project", user_id="test-user")
+        session.add(other_project)
+        await session.flush()
+        session.add(
+            VideoUpload(
+                id="other-video",
+                project_id=other_project.id,
+                filename="other-video.mp4",
+                file_path="/tmp/other-video.mp4",
+                file_size=100,
+                mime_type="video/mp4",
+            )
+        )
+        await session.commit()
+
+    response = await client.post(
+        f"/api/projects/{project_id}/pipeline",
+        json={
+            "script": "use another project's video",
+            "reference_video_ids": ["other-video"],
+            "review_prompts": False,
+        },
+    )
+    assert response.status_code == 400
 
 
 async def test_pipeline_delivery_publish_requires_connected_douyin_account(pipeline_client, project_id, session_factory):

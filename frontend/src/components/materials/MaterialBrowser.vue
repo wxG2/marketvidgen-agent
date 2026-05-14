@@ -24,11 +24,30 @@ const selections = ref<MaterialSelection[]>([])
 const loading = ref(false)
 const uploading = ref(false)
 const uploadProgress = ref(0)
+const materialFileAccept = 'image/*,audio/mpeg,audio/wav,audio/x-wav,audio/aac,audio/flac,audio/ogg,audio/mp4,audio/webm,.mp3,.wav,.m4a,.aac,.flac,.ogg,.webm'
 
 const selectedIds = computed(() => new Set(selections.value.map((item) => item.material_id)))
 
 function previewUrl(item: MaterialItem) {
   return item.thumbnail_url || `/api/materials/${item.id}/file`
+}
+
+function materialFileUrl(item: MaterialItem) {
+  return `/api/materials/${item.id}/file`
+}
+
+function isImageMaterial(item: MaterialItem) {
+  return item.media_type.startsWith('image')
+}
+
+function isAudioMaterial(item: MaterialItem) {
+  return item.media_type.startsWith('audio')
+}
+
+function materialTypeLabel(item: MaterialItem) {
+  if (isAudioMaterial(item)) return '音频'
+  if (isImageMaterial(item)) return '图片'
+  return item.media_type || '素材'
 }
 
 async function refreshCategories() {
@@ -83,9 +102,7 @@ async function toggle(item: MaterialItem) {
   }
 }
 
-async function handleFolder(event: Event) {
-  const input = event.target as HTMLInputElement
-  const files = Array.from(input.files || [])
+async function uploadFiles(files: File[]) {
   if (!files.length) return
 
   uploading.value = true
@@ -104,6 +121,23 @@ async function handleFolder(event: Event) {
     toast('error', '素材导入失败')
   } finally {
     uploading.value = false
+  }
+}
+
+async function handleFiles(event: Event) {
+  const input = event.target as HTMLInputElement
+  try {
+    await uploadFiles(Array.from(input.files || []))
+  } finally {
+    input.value = ''
+  }
+}
+
+async function handleFolder(event: Event) {
+  const input = event.target as HTMLInputElement
+  try {
+    await uploadFiles(Array.from(input.files || []))
+  } finally {
     input.value = ''
   }
 }
@@ -122,6 +156,11 @@ watch(() => props.projectId, refreshAll)
           刷新
         </button>
       </div>
+
+      <label class="mb-4 block rounded-lg border border-dashed border-[#cdbb97] bg-white/75 p-3 text-center text-xs text-[#6d5936] hover:bg-white">
+        <input class="hidden" type="file" :accept="materialFileAccept" multiple :disabled="uploading" @change="handleFiles">
+        {{ uploading ? `导入中 ${uploadProgress}%` : '上传图片 / 音频素材' }}
+      </label>
 
       <label class="mb-4 block rounded-lg border border-dashed border-[#cdbb97] bg-white/75 p-3 text-center text-xs text-[#6d5936] hover:bg-white">
         <input class="hidden" type="file" multiple webkitdirectory directory :disabled="uploading" @change="handleFolder">
@@ -166,24 +205,30 @@ watch(() => props.projectId, refreshAll)
       <div v-if="loading" class="rounded-lg border border-[#d7c7a8] bg-white/75 p-5 text-sm text-[#867351]">加载素材中...</div>
       <div v-else-if="materials.length === 0" class="rounded-lg border border-[#d7c7a8] bg-white/75 p-5 text-sm text-[#867351]">当前分类没有素材。</div>
       <div v-else class="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-4">
-        <button
+        <div
           v-for="item in materials"
           :key="item.id"
-          type="button"
           class="overflow-hidden rounded-lg border bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow"
           :class="selectedIds.has(item.id) ? 'border-[#7e9d53] ring-2 ring-[#c9dda5]' : 'border-[#e2d5bf]'"
+          role="button"
+          tabindex="0"
           @click="toggle(item)"
+          @keydown.enter.prevent="toggle(item)"
+          @keydown.space.prevent="toggle(item)"
         >
-          <img v-if="item.media_type.startsWith('image')" :src="previewUrl(item)" :alt="item.filename" class="h-36 w-full object-cover">
-          <video v-else :src="`/api/materials/${item.id}/file`" class="h-36 w-full object-cover" muted />
+          <img v-if="isImageMaterial(item)" :src="previewUrl(item)" :alt="item.filename" class="h-36 w-full object-cover">
+          <div v-else-if="isAudioMaterial(item)" class="flex h-36 w-full items-center justify-center bg-[#f2e8d6] px-3">
+            <audio class="w-full" controls :src="materialFileUrl(item)" @click.stop />
+          </div>
+          <video v-else :src="materialFileUrl(item)" class="h-36 w-full object-cover" muted />
           <div class="p-3">
             <div class="truncate text-sm font-medium">{{ item.filename }}</div>
             <div class="mt-1 flex items-center justify-between text-xs text-[#8a7857]">
-              <span>{{ item.category }}</span>
+              <span>{{ materialTypeLabel(item) }} · {{ item.category }}</span>
               <span>{{ selectedIds.has(item.id) ? '已选' : '选择' }}</span>
             </div>
           </div>
-        </button>
+        </div>
       </div>
     </main>
   </section>

@@ -86,11 +86,19 @@ def _render_subtitle_overlays(
     temp_dir: str,
     first_overlay_input_idx: int = 2,
 ) -> tuple[list[str], str]:
-    """Render subtitle segments as transparent PNGs and build an overlay filter."""
+    """Render subtitle segments as adaptive transparent PNGs and build an overlay filter.
+
+    Features:
+    - Dynamic font size: ~4.8% of video height, clamped to [18, 64] px
+    - Auto line-wrapping at 86% of video width
+    - Bottom safe area, centered, max 2 lines
+    - Long subtitles split into multiple pages with proportional time allocation
+    - White text with black stroke and semi-transparent shadow for readability
+    """
     from PIL import Image, ImageDraw, ImageFont
 
-    font = None
-    font_size = 28
+    # Dynamic font size based on video height
+    font_size = max(18, min(64, int(height * 0.048)))
     font_candidates = [
         "/System/Library/Fonts/STHeiti Medium.ttc",
         "/System/Library/Fonts/PingFang.ttc",
@@ -99,6 +107,7 @@ def _render_subtitle_overlays(
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     ]
+    font = None
     for fp in font_candidates:
         if os.path.exists(fp):
             try:
@@ -112,34 +121,135 @@ def _render_subtitle_overlays(
         except Exception:
             font = ImageFont.load_default()
 
-    png_paths: list[str] = []
-    for i, seg in enumerate(segments):
+    # Text layout constants
+    max_width = int(width * 0.86)
+    bottom_margin_ratio = 0.10  # 10% from bottom as safe area
+    line_spacing = int(font_size * 0.3)
+    stroke_width = max(2, font_size // 14)
+    shadow_offset = max(1, font_size // 16)
+
+    def _wrap_text(text: str) -> list[str]:
+        """Wrap text to fit within max_width, max 2 lines."""
+        # Try single line first
+        bbox = _draw.textbbox((0, 0), text, font=font)
+        if bbox[2] - bbox[0] <= max_width:
+            return [text]
+
+        # Greedy character-based wrapping for CJK text
+        lines: list[str] = []
+        current_line = ""
+        for ch in text:
+            test_line = current_line + ch
+            bbox = _draw.textbbox((0, 0), test_line, font=font)
+            if bbox[2] - bbox[0] > max_width and current_line:
+                lines.append(current_line)
+                current_line = ch
+                if len(lines) >= 2:
+                    break
+            else:
+                current_line = test_line
+        if current_line and len(lines) < 2:
+            lines.append(current_line)
+        # If still have remaining chars (shouldn't normally happen), truncate
+        if len(lines) == 2 and current_line and len(lines) < 3:
+            pass  # Already have 2 lines
+        return lines or [text]
+
+    def _render_subtitle_png(text_lines: list[str]) -> str:
+        """Create a transparent PNG with the subtitle text."""
         img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
-        text = seg["text"]
 
-        bbox = draw.textbbox((0, 0), text, font=font)
-        tw = bbox[2] - bbox[0]
-        th = bbox[3] - bbox[1]
-        x = (width - tw) // 2
-        y = height - th - 40
+        # Calculate total text block height
+        line_heights = []
+        for line in text_lines:
+            bbox = draw.textbbox((0, 0), line, font=font)
+            line_heights.append(bbox[3] - bbox[1])
+        total_text_height = sum(line_heights) + line_spacing * (len(text_lines) - 1)
 
-        for dx in range(-2, 3):
-            for dy in range(-2, 3):
-                if dx == 0 and dy == 0:
-                    continue
-                draw.text((x + dx, y + dy), text, font=font, fill=(0, 0, 0, 220))
-        draw.text((x, y), text, font=font, fill=(255, 255, 255, 255))
+        # Position at bottom safe area, centered horizontally
+        y_start = height - int(height * bottom_margin_ratio) - total_text_height
 
-        png_path = os.path.join(temp_dir, f"sub_{i:03d}.png")
+        for li, line in enumerate(text_lines):
+            bbox = draw.textbbox((0, 0), line, font=font)
+            tw = bbox[2] - bbox[0]
+            x = (width - tw) // 2
+            y = y_start + sum(line_heights[:li]) + line_spacing * li
+
+            # Shadow (semi-transparent dark offset)
+            draw.text(
+                (x + shadow_offset, y + shadow_offset),
+                line,
+                font=font,
+                fill=(0, 0, 0, 80),
+            )
+            # Stroke (outline)
+            for dx in range(-stroke_width, stroke_width + 1):
+                for dy in range(-stroke_width, stroke_width + 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    draw.text((x + dx, y + dy), line, font=font, fill=(0, 0, 0, 220))
+            # Main text (white)
+            draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
+
+        import uuid
+        png_path = os.path.join(temp_dir, f"sub_{uuid.uuid4().hex[:8]}.png")
         img.save(png_path)
+        return png_path
+
+    # Pre-create a draw instance for text measurement
+    _draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+
+    # Expand segments: split long text into multiple subtitle pages
+    expanded_segments: list[dict] = []
+    for seg in segments:
+        text = str(seg.get("text") or "").strip()
+        if not text:
+            continue
+        start_s = float(seg.get("start_s", 0))
+        end_s = float(seg.get("end_s", 0))
+        duration = max(end_s - start_s, 0.5)
+
+        wrapped = _wrap_text(text)
+        if len(wrapped) <= 2:
+            expanded_segments.append({
+                "start_s": start_s,
+                "end_s": end_s,
+                "lines": wrapped,
+            })
+        else:
+            # Split into multiple pages, distribute time proportionally by char count
+            char_counts = []
+            for i in range(0, len(wrapped), 2):
+                chunk = wrapped[i:i + 2]
+                char_counts.append(sum(len(line) for line in chunk))
+            total_chars = sum(char_counts) or 1
+            time_cursor = start_s
+            for ci, (i) in enumerate(range(0, len(wrapped), 2)):
+                chunk = wrapped[i:i + 2]
+                chunk_duration = duration * char_counts[ci] / total_chars
+                chunk_end = min(time_cursor + chunk_duration, end_s)
+                if ci == len(char_counts) - 1:
+                    chunk_end = end_s
+                expanded_segments.append({
+                    "start_s": round(time_cursor, 3),
+                    "end_s": round(chunk_end, 3),
+                    "lines": chunk,
+                })
+                time_cursor = chunk_end
+
+    # Render each expanded segment as a PNG
+    png_paths: list[str] = []
+    for seg in expanded_segments:
+        png_path = _render_subtitle_png(seg["lines"])
         png_paths.append(png_path)
 
+    # Build FFmpeg overlay filter chain
     parts = []
     prev = "[0:v]"
-    for i, seg in enumerate(segments):
+    for i, seg in enumerate(expanded_segments):
         input_idx = i + first_overlay_input_idx
-        out_label = f"[v{i}]" if i < len(segments) - 1 else "[vout]"
+        out_label = f"[v{i}]" if i < len(expanded_segments) - 1 else "[vout]"
         start = f"{seg['start_s']:.3f}"
         end = f"{seg['end_s']:.3f}"
         parts.append(

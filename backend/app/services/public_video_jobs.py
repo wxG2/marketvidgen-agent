@@ -45,7 +45,7 @@ def _external_status(internal_status: str) -> str:
         return "queued"
     if internal_status == "running":
         return "processing"
-    if internal_status in {"waiting_prompt_review", "waiting_confirmation"}:
+    if internal_status in {"waiting_prompt_review", "waiting_confirmation", "waiting_remix_confirmation"}:
         return "requires_review"
     if internal_status in TERMINAL_STATUSES:
         return internal_status
@@ -96,6 +96,14 @@ def _replication_plan_review(snapshot: dict[str, Any]) -> dict[str, Any]:
     return _scrub_review_data(replication_plan if isinstance(replication_plan, dict) else {})
 
 
+def _remix_plan_review(snapshot: dict[str, Any]) -> dict[str, Any]:
+    remix_plan = snapshot.get("remix_plan")
+    if not isinstance(remix_plan, dict):
+        remix_output = snapshot.get("remix_planner") if isinstance(snapshot.get("remix_planner"), dict) else {}
+        remix_plan = remix_output.get("remix_plan")
+    return _scrub_review_data(remix_plan if isinstance(remix_plan, dict) else {})
+
+
 def build_public_job_response(job: ExternalVideoJob, run: PipelineRun) -> PublicVideoJobResponse:
     status = _external_status(run.status)
     snapshot = _load_json(run.artifacts_snapshot)
@@ -104,6 +112,8 @@ def build_public_job_response(job: ExternalVideoJob, run: PipelineRun) -> Public
         review = PublicVideoJobReviewState(type="shot_plan", required=True, data=_shot_plan_review(snapshot))
     elif run.status == "waiting_confirmation":
         review = PublicVideoJobReviewState(type="replication_plan", required=True, data=_replication_plan_review(snapshot))
+    elif run.status == "waiting_remix_confirmation":
+        review = PublicVideoJobReviewState(type="remix_plan", required=True, data=_remix_plan_review(snapshot))
 
     result = PublicVideoJobResultResponse(
         download_url=f"/v1/video-jobs/{job.id}/result" if run.status == "completed" and run.final_video_path else None

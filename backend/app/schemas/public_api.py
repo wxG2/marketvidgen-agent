@@ -87,7 +87,7 @@ class PublicVideoJobResultResponse(BaseModel):
 
 
 class PublicVideoJobReviewState(BaseModel):
-    type: Optional[Literal["shot_plan", "replication_plan"]] = None
+    type: Optional[Literal["shot_plan", "replication_plan", "remix_plan"]] = None
     required: bool = False
     data: dict = Field(default_factory=dict)
 

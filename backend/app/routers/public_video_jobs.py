@@ -20,6 +20,7 @@ from app.routers.pipeline import (
     _build_replication_narration_script,
     _continue_from_confirmation,
     _continue_from_prompt_review,
+    _continue_from_remix_confirmation,
     _pipeline_tasks,
     launch_pipeline_task,
 )
@@ -142,6 +143,17 @@ def get_public_video_jobs_router(executor) -> APIRouter:
             )
         if run.status == "waiting_confirmation":
             return await _review_replication_plan(
+                executor,
+                job.project_id,
+                run.id,
+                data,
+                memory_service=getattr(request.app.state, "agent_memory", None),
+                mem0=getattr(request.app.state, "mem0", None),
+                db=db,
+                user_id=context.user.id,
+            )
+        if run.status == "waiting_remix_confirmation":
+            return await _review_remix_plan(
                 executor,
                 job.project_id,
                 run.id,
@@ -343,3 +355,70 @@ async def _review_replication_plan(
     _pipeline_tasks[run.id] = task
     task.add_done_callback(lambda _task: _pipeline_tasks.pop(run.id, None))
     return PublicVideoJobReviewResponse(status="confirmed", message="Replication plan approved; video generation resumed")
+
+
+async def _review_remix_plan(
+    executor,
+    project_id: str,
+    run_id: str,
+    data: PublicVideoJobReviewRequest,
+    *,
+    memory_service=None,
+    mem0=None,
+    db: AsyncSession,
+    user_id: str,
+) -> PublicVideoJobReviewResponse:
+    from app.models.pipeline import PipelineRun
+
+    run = await db.get(PipelineRun, run_id)
+    if run is None or run.user_id != user_id or run.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Video job not found")
+    input_config = json.loads(run.input_config or "{}")
+
+    if not data.approved:
+        if data.adjustments:
+            adjusted_config = {**input_config, "remix_adjustment_feedback": data.adjustments}
+            snapshot = json.loads(run.artifacts_snapshot or "{}")
+            snapshot.pop("audio", None)
+            run.status = "running"
+            run.current_agent = "remix_planner"
+            run.input_config = json.dumps(adjusted_config, ensure_ascii=False)
+            run.artifacts_snapshot = json.dumps(snapshot, ensure_ascii=False)
+            run.updated_at = datetime.now(timezone.utc)
+            await db.commit()
+            launch_pipeline_task(
+                executor,
+                run.id,
+                project_id,
+                adjusted_config,
+                user_id=user_id,
+                memory_service=memory_service,
+                mem0=mem0,
+            )
+            return PublicVideoJobReviewResponse(status="rerunning", message="Remix plan is being regenerated")
+        run.status = "cancelled"
+        run.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+        return PublicVideoJobReviewResponse(status="cancelled", message="Video job cancelled")
+
+    snapshot: dict = json.loads(run.artifacts_snapshot or "{}")
+    run.status = "running"
+    run.current_agent = "remix_assembler"
+    run.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    task = asyncio.create_task(
+        _continue_from_remix_confirmation(
+            executor,
+            run.id,
+            project_id,
+            input_config,
+            snapshot,
+            user_id=user_id,
+            memory_service=memory_service,
+            mem0=mem0,
+        )
+    )
+    _pipeline_tasks[run.id] = task
+    task.add_done_callback(lambda _task: _pipeline_tasks.pop(run.id, None))
+    return PublicVideoJobReviewResponse(status="confirmed", message="Remix plan approved; video assembly resumed")

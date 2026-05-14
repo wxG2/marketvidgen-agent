@@ -81,3 +81,17 @@ class AutoSessionMaterialSelection(Base):
     material_id: Mapped[str] = mapped_column(String, ForeignKey("materials.id", ondelete="CASCADE"), index=True, nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class AutoSessionReferenceVideoSelection(Base):
+    __tablename__ = "auto_session_reference_video_selections"
+    __table_args__ = (
+        UniqueConstraint("session_id", "video_upload_id", name="uq_auto_session_reference_videos_session_video"),
+        CheckConstraint("sort_order >= 0", name="sort_order_non_negative"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    session_id: Mapped[str] = mapped_column(String, ForeignKey("auto_chat_sessions.id", ondelete="CASCADE"), index=True, nullable=False)
+    video_upload_id: Mapped[str] = mapped_column(String, ForeignKey("video_uploads.id", ondelete="CASCADE"), index=True, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))

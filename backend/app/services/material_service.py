@@ -10,6 +10,8 @@ from app.models.material import Material
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".gif", ".heic", ".heif", ".svg", ".ico", ".avif"}
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".aac", ".flac", ".ogg", ".m4a", ".webm"}
+MATERIAL_EXTENSIONS = IMAGE_EXTENSIONS | AUDIO_EXTENSIONS
 
 
 async def scan_materials(db: AsyncSession, materials_root: str, user_id: str) -> dict:
@@ -36,7 +38,8 @@ async def scan_materials(db: AsyncSession, materials_root: str, user_id: str) ->
                 continue
 
             ext = file_path.suffix.lower()
-            if ext not in IMAGE_EXTENSIONS:
+            media_type = get_media_type(file_path.name)
+            if ext not in MATERIAL_EXTENSIONS or media_type is None:
                 stats["skipped"] += 1
                 continue
 
@@ -53,7 +56,7 @@ async def scan_materials(db: AsyncSession, materials_root: str, user_id: str) ->
                 filename=file_path.name,
                 file_path=rel_path,
                 file_size=file_path.stat().st_size,
-                media_type="image",
+                media_type=media_type,
             )
             db.add(material)
             stats["files"] += 1
@@ -67,13 +70,15 @@ def get_media_type(filename: str):
     ext = Path(filename).suffix.lower()
     if ext in IMAGE_EXTENSIONS:
         return "image"
+    if ext in AUDIO_EXTENSIONS:
+        return "audio"
     return None
 
 
 async def index_uploaded_file(
     db: AsyncSession, materials_root: str, user_id: str, category: str, filename: str, content: bytes,
 ):
-    """Save an uploaded image to materials_root/category/ and index it in the database."""
+    """Save an uploaded material to materials_root/category/ and index it in the database."""
     media_type = get_media_type(filename)
     if media_type is None:
         print(f"[index] Unsupported file type: {filename!r} (ext={Path(filename).suffix.lower()!r})")
@@ -111,7 +116,7 @@ async def index_uploaded_file(
 async def get_categories(db: AsyncSession, user_id: str) -> list[dict]:
     result = await db.execute(
         select(Material.category, func.count(Material.id))
-        .where(Material.user_id == user_id, Material.media_type == "image")
+        .where(Material.user_id == user_id)
         .group_by(Material.category)
         .order_by(Material.category)
     )
@@ -125,7 +130,6 @@ async def get_materials_by_category(
         select(func.count(Material.id)).where(
             Material.user_id == user_id,
             Material.category == category,
-            Material.media_type == "image",
         )
     )
     total = count_result.scalar() or 0
@@ -135,7 +139,6 @@ async def get_materials_by_category(
         .where(
             Material.user_id == user_id,
             Material.category == category,
-            Material.media_type == "image",
         )
         .order_by(Material.filename)
         .offset((page - 1) * page_size)

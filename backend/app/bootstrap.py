@@ -12,13 +12,14 @@ from sqlalchemy import select
 
 from app.agents import (
     AudioSubtitleAgent,
-    ChatAgent,
     LangGraphPipelineExecutor,
     OrchestratorAgent,
     PipelineExecutor,
     PromptEngineerAgent,
     QAReviewerAgent,
     ReplicationPlannerAgent,
+    RemixAssemblerAgent,
+    RemixPlannerAgent,
     ToolRegistry,
     VideoEditorAgent,
     VideoGeneratorAgent,
@@ -38,6 +39,8 @@ from app.services.rag_service import RagService
 from app.services.tts_service import MockTTSService, RealTTSService
 from app.services.video_analyzer import MockVideoAnalyzer, Qwen3VLAnalyzer
 from app.services.video_editing.composer import MockVideoEditorService, RealVideoEditorService
+from app.services.video_editing.clip_extractor import ClipExtractorService
+from app.services.video_editing.video_profiler import VideoProfiler
 from app.services.video_generator import (
     Kling3Generator,
     MockVideoGenerator,
@@ -196,6 +199,8 @@ def create_pipeline_executor():
     tts = create_tts()
     editor_svc = create_video_editor_service(llm)
     keyframe_ext = create_keyframe_extractor()
+    video_profiler = VideoProfiler(keyframe_ext)
+    clip_extractor = ClipExtractorService(ffmpeg_bin=settings.FFMPEG_BIN)
     qa_reviewer = create_qa_reviewer()
     engine = settings.PIPELINE_ENGINE.lower()
     if engine == "langgraph":
@@ -209,6 +214,13 @@ def create_pipeline_executor():
     return executor_cls(
         orchestrator=OrchestratorAgent(llm_service=llm),
         replication_planner=ReplicationPlannerAgent(llm_service=llm, keyframe_extractor=keyframe_ext),
+        remix_planner=RemixPlannerAgent(llm_service=llm, video_profiler=video_profiler),
+        remix_assembler=RemixAssemblerAgent(
+            clip_extractor=clip_extractor,
+            output_dir=settings.GENERATED_DIR,
+            ffmpeg_bin=settings.FFMPEG_BIN,
+            tts_service=tts,
+        ),
         prompt_engineer=PromptEngineerAgent(llm_service=llm),
         audio_agent=AudioSubtitleAgent(tts_service=tts),
         video_gen_agent=VideoGeneratorAgent(video_generator=generator),
@@ -269,6 +281,7 @@ def initialize_agent_state(app: FastAPI) -> None:
 
     chat_llm = create_llm()
     chat_executor = create_pipeline_executor()
+    orchestrator_agent = OrchestratorAgent(llm_service=chat_llm)
     tool_registry = ToolRegistry()
     register_runtime_skills(
         tool_registry=tool_registry,
@@ -279,11 +292,12 @@ def initialize_agent_state(app: FastAPI) -> None:
             "memory_service": app.state.agent_memory,
             "mem0": app.state.mem0,
         },
-        agent_name="chat_agent",
+        agent_name="orchestrator",
     )
+    orchestrator_agent.configure_chat(tool_registry=tool_registry, mem0=app.state.mem0)
     app.state.tool_registry = tool_registry
-    app.state.chat_agent = ChatAgent(chat_llm, tool_registry, mem0=app.state.mem0)
-    app.state.chat_pipeline_executor = chat_executor
+    app.state.orchestrator_agent = orchestrator_agent
+    app.state.orchestrator_pipeline_executor = chat_executor
 
 
 async def startup_application(app: FastAPI) -> asyncio.Task:

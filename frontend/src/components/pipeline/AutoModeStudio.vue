@@ -4,6 +4,7 @@ import {
   chatWithAgent,
   createAutoSession,
   createAutoSessionPublishDraft,
+  deselectAutoSessionMaterial,
   getAutoSession,
   listAutoSessions,
   selectAutoSessionMaterial,
@@ -14,6 +15,7 @@ import {
   cancelPipeline,
   confirmPromptReview,
   confirmReplicationPlan,
+  confirmRemixPlan,
   estimateCost,
   getPipelineAgents,
   getPipelineArtifacts,
@@ -35,8 +37,10 @@ import {
   resetPipeline,
   setAgentExecutions,
   setCurrentRun,
+  setRemixVideoIds,
   setUsageSummary,
 } from '../../stores/pipelineStore'
+import RemixPlanReview from '../remix/RemixPlanReview.vue'
 import type {
   AgentExecution,
   AutoChatMessagePayload,
@@ -55,6 +59,8 @@ import type {
   RepositoryAsset,
   RepositoryDelivery,
   RepositoryUpload,
+  RemixPlan,
+  RemixSegmentEdit,
   SocialAccount,
   VideoUpload,
 } from '../../types'
@@ -116,6 +122,10 @@ const skipVideoGeneration = ref(AUTO_PIPELINE_CODE_SWITCHES.skipVideoGeneration)
 const watermarkId = ref<string | null>(null)
 const referenceVideoId = ref<string | null>(null)
 const referenceVideoName = ref<string | null>(null)
+const referenceVideoIds = ref<string[]>([])
+const referenceVideoNames = ref<string[]>([])
+const removingMaterialIds = ref<Set<string>>(new Set())
+const removingReferenceVideoIds = ref<Set<string>>(new Set())
 const currentRun = ref<PipelineRun | null>(null)
 const agentExecutions = ref<AgentExecution[]>([])
 const pipelineArtifacts = ref<RepositoryAsset[]>([])
@@ -130,6 +140,7 @@ const statusLines = ref<string[]>([])
 const launching = ref(false)
 const abortingChat = ref(false)
 const confirmingPlan = ref(false)
+const confirmingRemix = ref(false)
 const confirmingPromptReview = ref(false)
 const cancellingRun = ref(false)
 const shotEdits = ref<Record<number, { script_segment?: string; video_prompt?: string }>>({})
@@ -154,7 +165,15 @@ let chatRequestSeq = 0
 const directorPlanRefreshedRunIds = new Set<string>()
 
 const activeSessionSummary = computed(() => sessionSummaries.value.find((item) => item.id === activeSessionId.value) || null)
-const selectedImageIds = computed(() => selectedMaterials.value.map((item) => item.material_id).filter(Boolean))
+const selectedImageIds = computed(() => selectedMaterials.value.filter(isImageSelection).map((item) => item.material_id).filter(Boolean))
+const selectedBgmMaterialId = computed(() => {
+  const audio = selectedMaterials.value.find((item) => item.material?.media_type?.startsWith('audio'))
+  return audio?.material_id || null
+})
+const referenceVideoChips = computed(() => referenceVideoIds.value.map((id, index) => ({
+  id,
+  name: referenceVideoNames.value[index] || (referenceVideoIds.value.length === 1 ? referenceVideoName.value || '参考视频' : `参考视频 ${index + 1}`),
+})))
 const currentRunTerminal = computed(() => {
   const status = currentRun.value?.status
   return isTerminalRunStatus(status)
@@ -175,6 +194,18 @@ const currentDirectorPlanShots = computed(() => {
   return []
 })
 
+const currentRemixPlan = computed<RemixPlan | null>(() => {
+  if (!currentRun.value || currentRun.value.status !== 'waiting_remix_confirmation') return null
+  for (let i = agentExecutions.value.length - 1; i >= 0; i--) {
+    const output = agentExecutions.value[i].output_data
+    const plan = output?.remix_plan
+    if (plan && typeof plan === 'object' && Array.isArray((plan as RemixPlan).segments)) {
+      return plan as RemixPlan
+    }
+  }
+  return null
+})
+
 const artifactGroups = computed(() => {
   const order = ['prompt_engineer', 'audio_subtitle', 'video_generator']
   return order
@@ -189,6 +220,8 @@ const pipelineProgressSteps = computed(() => {
   const run = currentRun.value
   if (!run) return []
   const preferredAgents = [
+    'remix_planner',
+    'remix_assembler',
     'replication_planner',
     'orchestrator',
     'prompt_engineer',
@@ -238,12 +271,21 @@ function isTerminalRunStatus(status: string | undefined | null) {
 }
 
 function isActiveRunStatus(status: string | undefined | null) {
-  return status === 'pending' || status === 'running' || status === 'waiting_confirmation' || status === 'waiting_prompt_review'
+  return status === 'pending' || status === 'running' || status === 'waiting_confirmation' || status === 'waiting_prompt_review' || status === 'waiting_remix_confirmation'
 }
 
 function readableError(error: unknown, fallback: string) {
-  const candidate = error as { userMessage?: string; message?: string }
-  return candidate?.userMessage || candidate?.message || fallback
+  const candidate = error as {
+    userMessage?: unknown
+    response?: { data?: { detail?: unknown; message?: unknown } }
+    message?: unknown
+  }
+  const message =
+    candidate.userMessage ||
+    candidate.response?.data?.detail ||
+    candidate.response?.data?.message ||
+    candidate.message
+  return typeof message === 'string' && message.trim() ? message : fallback
 }
 
 function isDouyinOAuthMessage(data: unknown): data is DouyinOAuthMessage {
@@ -278,6 +320,7 @@ function statusText(status: string | undefined | null) {
     cancelled: '已取消',
     waiting_confirmation: '等待确认',
     waiting_prompt_review: '镜头方案已生成，等待确认',
+    waiting_remix_confirmation: '混剪方案已生成，等待确认',
     skipped: '已跳过',
   }
   return labels[status] || status
@@ -307,6 +350,10 @@ function isImageSelection(item: MaterialSelection) {
   return Boolean(item.material?.media_type?.startsWith('image'))
 }
 
+function isAudioSelection(item: MaterialSelection) {
+  return Boolean(item.material?.media_type?.startsWith('audio'))
+}
+
 function selectedMaterialThumbnailUrl(item: MaterialSelection) {
   return item.material?.thumbnail_url || `/api/materials/${item.material_id}/thumbnail`
 }
@@ -316,12 +363,76 @@ function selectedMaterialName(item: MaterialSelection) {
 }
 
 function selectedMaterialMeta(item: MaterialSelection) {
+  if (isAudioSelection(item)) return item.material?.category ? `音频 / ${item.material.category}` : '音频'
   return item.material?.category || item.category || item.material?.media_type || '素材'
+}
+
+function setMaterialRemoving(materialId: string, removing: boolean) {
+  const next = new Set(removingMaterialIds.value)
+  if (removing) next.add(materialId)
+  else next.delete(materialId)
+  removingMaterialIds.value = next
+}
+
+function setReferenceVideoRemoving(videoId: string, removing: boolean) {
+  const next = new Set(removingReferenceVideoIds.value)
+  if (removing) next.add(videoId)
+  else next.delete(videoId)
+  removingReferenceVideoIds.value = next
+}
+
+async function removeSelectedMaterial(item: MaterialSelection) {
+  const sessionId = activeSessionId.value
+  const materialId = item.material_id
+  if (!sessionId || !materialId || removingMaterialIds.value.has(materialId)) return
+
+  setMaterialRemoving(materialId, true)
+  try {
+    await deselectAutoSessionMaterial(props.projectId, sessionId, materialId)
+    selectedMaterials.value = selectedMaterials.value.filter((selection) => selection.material_id !== materialId)
+    toast('success', '已移除素材')
+  } catch (error) {
+    toast('error', readableError(error, '移除素材失败'))
+  } finally {
+    setMaterialRemoving(materialId, false)
+  }
+}
+
+async function removeReferenceVideo(videoId: string) {
+  const sessionId = activeSessionId.value
+  if (!sessionId || !videoId || removingReferenceVideoIds.value.has(videoId)) return
+
+  const nextIds: string[] = []
+  const nextNames: string[] = []
+  for (const [index, id] of referenceVideoIds.value.entries()) {
+    if (id === videoId) continue
+    nextIds.push(id)
+    if (referenceVideoNames.value[index]) nextNames.push(referenceVideoNames.value[index])
+  }
+
+  setReferenceVideoRemoving(videoId, true)
+  try {
+    await updateAutoSession(props.projectId, sessionId, {
+      reference_video_ids: nextIds,
+    })
+    referenceVideoIds.value = nextIds
+    referenceVideoNames.value = nextNames
+    referenceVideoId.value = nextIds[0] || null
+    referenceVideoName.value = nextNames[0] || null
+    setRemixVideoIds(nextIds.length >= 2 ? nextIds : [])
+    toast('success', '已移除参考视频')
+  } catch (error) {
+    toast('error', readableError(error, '移除参考视频失败'))
+  } finally {
+    setReferenceVideoRemoving(videoId, false)
+  }
 }
 
 function agentLabel(agent: string) {
   const labels: Record<string, string> = {
     replication_planner: '复刻规划',
+    remix_planner: '混剪规划',
+    remix_assembler: '混剪组装',
     orchestrator: '素材理解',
     prompt_engineer: '提示词 Agent',
     audio_subtitle: '音频 Agent',
@@ -396,8 +507,19 @@ function hydrate(detail: AutoChatSessionDetail) {
   selectedMaterials.value = detail.selected_materials
   script.value = detail.state.draft_script || ''
   backgroundTemplateId.value = detail.state.background_template_id
-  referenceVideoId.value = detail.state.reference_video_id
-  referenceVideoName.value = detail.reference_video?.filename || detail.session.reference_video_name || null
+  const referenceVideos = detail.reference_videos?.length
+    ? detail.reference_videos
+    : (detail.reference_video ? [detail.reference_video] : [])
+  referenceVideoIds.value = referenceVideos.length
+    ? referenceVideos.map((item) => item.id)
+    : (detail.state.reference_video_ids?.length ? detail.state.reference_video_ids : (detail.state.reference_video_id ? [detail.state.reference_video_id] : []))
+  referenceVideoNames.value = referenceVideos.map((item) => item.filename)
+  if (referenceVideoNames.value.length === 0 && detail.session.reference_video_name) {
+    referenceVideoNames.value = [detail.session.reference_video_name]
+  }
+  referenceVideoId.value = referenceVideoIds.value[0] || null
+  referenceVideoName.value = referenceVideoNames.value[0] || null
+  setRemixVideoIds(referenceVideoIds.value.length >= 2 ? referenceVideoIds.value : [])
   videoPlatform.value = detail.state.video_platform || 'generic'
   videoNoAudio.value = AUTO_PIPELINE_CODE_SWITCHES.videoModelNoAudio
   voiceoverNoAudio.value = AUTO_PIPELINE_CODE_SWITCHES.voiceoverNoAudio
@@ -471,13 +593,14 @@ async function newSession() {
   }
 }
 
-async function persistSessionState() {
+async function persistSessionState(strict = false) {
   if (!activeSessionId.value) return
   try {
     await updateAutoSession(props.projectId, activeSessionId.value, {
       draft_script: script.value || null,
       background_template_id: backgroundTemplateId.value,
       reference_video_id: referenceVideoId.value,
+      reference_video_ids: referenceVideoIds.value,
       video_platform: videoPlatform.value,
       video_no_audio: videoNoAudio.value,
       video_model_no_audio: videoNoAudio.value,
@@ -487,7 +610,8 @@ async function persistSessionState() {
       bgm_mood: bgmMood.value,
       watermark_id: watermarkId.value,
     })
-  } catch {
+  } catch (error) {
+    if (strict) throw error
     // Saving state is opportunistic; launching and chat still use current local values.
   }
 }
@@ -595,7 +719,7 @@ async function stopChatStream() {
   abortingChat.value = false
 }
 
-async function sendMessage(forceTool?: string) {
+async function sendMessage() {
   const content = input.value.trim()
   if (!content || !activeSessionId.value || streaming.value) return
   const sessionId = activeSessionId.value
@@ -627,7 +751,6 @@ async function sendMessage(forceTool?: string) {
         role: 'user',
         content,
         payload: { mutedLines: [] },
-        force_tool: forceTool,
         generation_model: videoGenerationModel.value,
         skip_video_generation: skipVideoGeneration.value,
         video_model_no_audio: videoNoAudio.value,
@@ -692,29 +815,55 @@ async function sendMessage(forceTool?: string) {
 
 async function handleRepositoryPicked(
   items: MaterialItem[],
-  upload: RepositoryUpload | null,
+  uploads: RepositoryUpload[],
   delivery: RepositoryDelivery | null,
 ) {
   if (!activeSessionId.value) return
+  const sessionId = activeSessionId.value
+  const importedVideos: VideoUpload[] = []
+
   try {
     for (const [index, item] of items.entries()) {
-      await selectAutoSessionMaterial(props.projectId, activeSessionId.value, item.id, item.category, selectedMaterials.value.length + index)
+      await selectAutoSessionMaterial(props.projectId, sessionId, item.id, item.category, selectedMaterials.value.length + index)
     }
+  } catch (error) {
+    toast('error', readableError(error, '加入素材失败'))
+    throw error
+  }
 
-    let importedVideo: VideoUpload | null = null
-    if (upload) importedVideo = await importRepositoryUpload(upload.id, props.projectId, activeSessionId.value)
-    if (delivery) importedVideo = await importRepositoryDelivery(delivery.id, props.projectId, activeSessionId.value)
-
-    if (importedVideo) {
-      referenceVideoId.value = importedVideo.id
-      referenceVideoName.value = importedVideo.filename
+  try {
+    for (const upload of uploads) {
+      importedVideos.push(await importRepositoryUpload(upload.id, props.projectId, sessionId))
     }
+    if (delivery) {
+      importedVideos.splice(0, importedVideos.length, await importRepositoryDelivery(delivery.id, props.projectId, sessionId))
+    }
+  } catch (error) {
+    toast('error', readableError(error, '导入参考视频失败'))
+    throw error
+  }
 
-    await persistSessionState()
-    await openSession(activeSessionId.value)
-    toast('success', '仓库内容已加入当前会话')
-  } catch {
-    toast('error', '导入仓库内容失败')
+  if (importedVideos.length > 0) {
+    referenceVideoIds.value = importedVideos.map((item) => item.id)
+    referenceVideoNames.value = importedVideos.map((item) => item.filename)
+    referenceVideoId.value = importedVideos[0].id
+    referenceVideoName.value = importedVideos[0].filename
+    setRemixVideoIds(importedVideos.length >= 2 ? referenceVideoIds.value : [])
+  }
+
+  try {
+    await persistSessionState(true)
+    await openSession(sessionId)
+    const summaryParts: string[] = []
+    const audioCount = items.filter((item) => item.media_type?.startsWith('audio')).length
+    const imageCount = items.length - audioCount
+    if (imageCount > 0) summaryParts.push(`${imageCount}个图片素材`)
+    if (audioCount > 0) summaryParts.push(`${audioCount}个音频素材`)
+    if (importedVideos.length > 0) summaryParts.push(`${importedVideos.length}个参考视频`)
+    toast('success', summaryParts.length > 0 ? `已加入${summaryParts.join('、')}` : '仓库内容已加入当前会话')
+  } catch (error) {
+    toast('error', readableError(error, '保存会话状态失败'))
+    throw error
   }
 }
 
@@ -739,11 +888,25 @@ async function launch() {
       if (!check.ok && check.warning) toast('warning', check.warning, 6500)
     }
 
+    const remixVideoIds = referenceVideoIds.value.length >= 2 ? referenceVideoIds.value : []
+    setRemixVideoIds(remixVideoIds)
     const run = await launchPipeline(props.projectId, {
       script: finalScript,
       image_ids: selectedImageIds.value,
       session_id: activeSessionId.value,
       reference_video_id: referenceVideoId.value,
+      reference_video_ids: remixVideoIds,
+      remix_config: remixVideoIds.length >= 2
+        ? {
+            target_duration_seconds: durationMode.value === 'fixed' ? 30 : null,
+            bgm_material_id: selectedBgmMaterialId.value,
+            bgm_mood: bgmMood.value,
+            bgm_volume: 0.18,
+            include_source_audio: !videoNoAudio.value,
+            add_voiceover: !voiceoverNoAudio.value,
+            voiceover_script: null,
+          }
+        : null,
       background_template_id: backgroundTemplateId.value,
       platform: videoPlatform.value,
       duration_seconds: durationMode.value === 'fixed' ? 30 : 0,
@@ -883,6 +1046,20 @@ async function confirmPlan(approved: boolean) {
     toast('error', '提交确认失败')
   } finally {
     confirmingPlan.value = false
+  }
+}
+
+async function confirmRemix(payload: { approved: boolean; adjustments?: string | null; edited_segments?: RemixSegmentEdit[] }) {
+  if (!currentRun.value) return
+  confirmingRemix.value = true
+  try {
+    await confirmRemixPlan(props.projectId, currentRun.value.id, payload)
+    toast('success', payload.approved ? '混剪方案已确认' : '已提交调整意见')
+    startPolling(currentRun.value.id)
+  } catch {
+    toast('error', '提交混剪确认失败')
+  } finally {
+    confirmingRemix.value = false
   }
 }
 
@@ -1120,7 +1297,7 @@ defineExpose({ handleRepositoryPicked })
 
         <div class="mt-3 flex flex-wrap items-center gap-2 text-xs">
           <button type="button" class="rounded-lg border border-[#d7c7a8] bg-white px-3 py-1.5 hover:bg-[#f4ead8]" @click="emit('openRepositoryPicker')">
-            从仓库添加素材 / 参考视频
+            从仓库添加素材 / BGM / 参考视频
           </button>
         </div>
 
@@ -1128,7 +1305,7 @@ defineExpose({ handleRepositoryPicked })
           <div
             v-for="item in selectedMaterials"
             :key="item.id"
-            class="flex h-16 max-w-56 items-center gap-2 rounded-lg border border-[#c7d9a3] bg-[#f7fbef] p-1.5 pr-3 text-left"
+            class="relative flex h-16 max-w-56 items-center gap-2 rounded-lg border border-[#c7d9a3] bg-[#f7fbef] p-1.5 pr-8 text-left"
             :title="selectedMaterialName(item)"
           >
             <img
@@ -1145,10 +1322,33 @@ defineExpose({ handleRepositoryPicked })
               <div class="truncate text-xs font-medium text-[#526b32]">{{ selectedMaterialName(item) }}</div>
               <div class="mt-1 truncate text-[11px] text-[#7a8d56]">{{ selectedMaterialMeta(item) }}</div>
             </div>
+            <button
+              type="button"
+              class="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-[#c7d9a3] bg-white text-xs font-semibold text-[#526b32] hover:bg-[#eef6dd] disabled:cursor-not-allowed disabled:opacity-50"
+              :aria-label="`移除素材 ${selectedMaterialName(item)}`"
+              :disabled="removingMaterialIds.has(item.material_id)"
+              @click.stop="removeSelectedMaterial(item)"
+            >
+              x
+            </button>
           </div>
-          <span v-if="referenceVideoName" class="rounded-full bg-[#eef7fb] px-3 py-1 text-xs text-[#315065]">
-            参考视频：{{ referenceVideoName }}
-          </span>
+          <div
+            v-for="video in referenceVideoChips"
+            :key="video.id"
+            class="flex h-8 max-w-64 items-center gap-1 rounded-full bg-[#eef7fb] px-3 py-1 text-xs text-[#315065]"
+            :title="video.name"
+          >
+            <span class="truncate">参考视频：{{ video.name }}</span>
+            <button
+              type="button"
+              class="ml-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[#c5dcea] bg-white text-xs font-semibold text-[#315065] hover:bg-[#e2f2fa] disabled:cursor-not-allowed disabled:opacity-50"
+              :aria-label="`移除参考视频 ${video.name}`"
+              :disabled="removingReferenceVideoIds.has(video.id)"
+              @click.stop="removeReferenceVideo(video.id)"
+            >
+              x
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1271,7 +1471,7 @@ defineExpose({ handleRepositoryPicked })
               :disabled="cancellingRun"
               @click="cancelCurrentRun"
             >
-              {{ cancellingRun ? '取消中...' : (currentRun?.status === 'waiting_confirmation' ? '终止流程' : '取消流程') }}
+              {{ cancellingRun ? '取消中...' : (currentRun?.status === 'waiting_confirmation' || currentRun?.status === 'waiting_remix_confirmation' ? '终止流程' : '取消流程') }}
             </button>
           </div>
         </article>
@@ -1328,7 +1528,7 @@ defineExpose({ handleRepositoryPicked })
           :disabled="cancellingRun"
           @click="cancelCurrentRun"
         >
-          {{ cancellingRun ? '取消中...' : (currentRun?.status === 'waiting_confirmation' ? '终止流程' : '取消流程') }}
+          {{ cancellingRun ? '取消中...' : (currentRun?.status === 'waiting_confirmation' || currentRun?.status === 'waiting_remix_confirmation' ? '终止流程' : '取消流程') }}
         </button>
         <p v-if="currentRun?.error_message" class="mt-3 rounded-lg bg-[#fff1ec] p-3 text-xs text-[#8a3a2b]">{{ currentRun.error_message }}</p>
       </article>
@@ -1345,6 +1545,13 @@ defineExpose({ handleRepositoryPicked })
           </button>
         </div>
       </div>
+
+      <RemixPlanReview
+        v-if="currentRun?.status === 'waiting_remix_confirmation'"
+        :plan="currentRemixPlan"
+        :loading="confirmingRemix"
+        @confirm="confirmRemix"
+      />
 
       <div v-if="currentRun?.status === 'waiting_prompt_review'" class="mb-4 rounded-lg border border-[#a8c870] bg-[#f0f8e5] p-4">
         <div class="mb-2 text-sm font-semibold">镜头方案待确认</div>

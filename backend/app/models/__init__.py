@@ -14,7 +14,7 @@ from app.models.pipeline import PipelineRun, AgentExecution
 from app.models.video_delivery import VideoDelivery
 from app.models.social_account import SocialAccount
 from app.models.usage import ModelUsage
-from app.models.auto_chat import AutoChatSession, AutoChatMessage, AutoSessionMaterialSelection
+from app.models.auto_chat import AutoChatSession, AutoChatMessage, AutoSessionMaterialSelection, AutoSessionReferenceVideoSelection
 from app.models.agent_memory import AgentMemory
 from app.models.agent_state import (
     AgentThread,
@@ -42,7 +42,7 @@ __all__ = [
     "PipelineRun", "AgentExecution",
     "VideoDelivery", "SocialAccount",
     "ModelUsage",
-    "AutoChatSession", "AutoChatMessage", "AutoSessionMaterialSelection",
+    "AutoChatSession", "AutoChatMessage", "AutoSessionMaterialSelection", "AutoSessionReferenceVideoSelection",
     "AgentMemory",
     "AgentThread", "AgentMessage", "AgentRun", "AgentStep", "AgentCheckpoint",
     "ToolCall", "PromptVersion", "ModelCall", "RunEvent", "RetrievalDocument",

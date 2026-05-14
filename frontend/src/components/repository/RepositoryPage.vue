@@ -1,19 +1,21 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { deleteUserUpload, listRepositoryAssets, listUserDeliveries, listUserUploads } from '../../api/repository'
-import { deleteMaterial, getCategories, getMaterials } from '../../api/materials'
+import { deleteMaterial, getCategories, getMaterials, uploadProjectMaterials } from '../../api/materials'
+import { uploadVideo } from '../../api/upload'
 import type { MaterialCategory, MaterialItem, RepositoryAsset, RepositoryDelivery, RepositoryUpload } from '../../types'
 import { toast } from '../../composables/useToast'
 
 type Tab = 'deliveries' | 'uploads' | 'assets' | 'materials'
 
 const props = defineProps<{
+  projectId: string
   pickerMode?: boolean
 }>()
 
 const emit = defineEmits<{
   back: []
-  pickerConfirm: [items: MaterialItem[], upload: RepositoryUpload | null, delivery: RepositoryDelivery | null]
+  pickerConfirm: [items: MaterialItem[], uploads: RepositoryUpload[], delivery: RepositoryDelivery | null]
 }>()
 
 const tab = ref<Tab>(props.pickerMode ? 'materials' : 'deliveries')
@@ -27,10 +29,14 @@ const loading = ref(false)
 const playingUploadId = ref<string | null>(null)
 const playingDeliveryId = ref<string | null>(null)
 const selectedItems = ref<Map<string, MaterialItem>>(new Map())
-const selectedUploadId = ref<string | null>(null)
+const selectedUploads = ref<Map<string, RepositoryUpload>>(new Map())
 const selectedDeliveryId = ref<string | null>(null)
+const uploadingVideo = ref(false)
+const videoUploadProgress = ref(0)
+const uploadingMaterials = ref(false)
+const materialUploadProgress = ref(0)
+const materialFileAccept = 'image/*,audio/mpeg,audio/wav,audio/x-wav,audio/aac,audio/flac,audio/ogg,audio/mp4,audio/webm,.mp3,.wav,.m4a,.aac,.flac,.ogg,.webm'
 
-const selectedUpload = computed(() => uploads.value.find((item) => item.id === selectedUploadId.value) || null)
 const selectedDelivery = computed(() => deliveries.value.find((item) => item.id === selectedDeliveryId.value) || null)
 
 function formatBytes(bytes: number) {
@@ -72,6 +78,35 @@ function compactText(text: string | null) {
 
 function materialFileUrl(item: MaterialItem) {
   return `/api/materials/${item.id}/file`
+}
+
+function isImageMaterial(item: MaterialItem) {
+  return item.media_type.startsWith('image')
+}
+
+function isAudioMaterial(item: MaterialItem) {
+  return item.media_type.startsWith('audio')
+}
+
+function materialTypeLabel(item: MaterialItem) {
+  if (isAudioMaterial(item)) return '音频素材'
+  if (isImageMaterial(item)) return '图片素材'
+  return item.media_type || '素材'
+}
+
+function readableError(error: unknown, fallback: string) {
+  const candidate = error as {
+    userMessage?: unknown
+    response?: { data?: { detail?: unknown; message?: unknown } }
+    message?: unknown
+  }
+  const message =
+    candidate.userMessage ||
+    candidate.response?.data?.detail ||
+    candidate.response?.data?.message ||
+    candidate.message
+  if (message === 'Project not found') return '当前项目不存在，请返回项目列表重新选择或创建项目'
+  return typeof message === 'string' && message.trim() ? message : fallback
 }
 
 async function refreshUploads() {
@@ -118,10 +153,28 @@ function toggleMaterial(item: MaterialItem) {
   selectedItems.value = next
 }
 
+function toggleUpload(upload: RepositoryUpload) {
+  const next = new Map(selectedUploads.value)
+  if (next.has(upload.id)) next.delete(upload.id)
+  else next.set(upload.id, upload)
+  selectedUploads.value = next
+  if (next.size > 0) selectedDeliveryId.value = null
+}
+
+function selectDelivery(deliveryId: string) {
+  selectedDeliveryId.value = deliveryId
+  selectedUploads.value = new Map()
+}
+
 async function removeUpload(upload: RepositoryUpload) {
   try {
     await deleteUserUpload(upload.id)
     uploads.value = uploads.value.filter((item) => item.id !== upload.id)
+    if (selectedUploads.value.has(upload.id)) {
+      const next = new Map(selectedUploads.value)
+      next.delete(upload.id)
+      selectedUploads.value = next
+    }
     toast('success', '上传记录已删除')
   } catch {
     toast('error', '删除上传记录失败')
@@ -138,8 +191,71 @@ async function removeMaterial(item: MaterialItem) {
   }
 }
 
+async function handleVideoUpload(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file || uploadingVideo.value) return
+
+  uploadingVideo.value = true
+  videoUploadProgress.value = 0
+  try {
+    const created = await uploadVideo(props.projectId, file, (pct) => {
+      videoUploadProgress.value = pct
+    })
+    await refreshUploads()
+    if (props.pickerMode) {
+      const upload = uploads.value.find((item) => item.id === created.id)
+      if (upload) {
+        const next = new Map(selectedUploads.value)
+        next.set(upload.id, upload)
+        selectedUploads.value = next
+      }
+      selectedDeliveryId.value = null
+    }
+    toast('success', '参考视频已上传')
+  } catch (error) {
+    toast('error', readableError(error, '参考视频上传失败'))
+  } finally {
+    uploadingVideo.value = false
+    input.value = ''
+  }
+}
+
+async function handleMaterialUpload(event: Event) {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files || [])
+  if (!files.length || uploadingMaterials.value) return
+
+  uploadingMaterials.value = true
+  materialUploadProgress.value = 0
+  try {
+    const payload = files.map((file) => ({
+      file,
+      relativePath: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
+    }))
+    const result = await uploadProjectMaterials(props.projectId, payload, false, (pct) => {
+      materialUploadProgress.value = pct
+    })
+    await refreshCategories()
+    const uploadedItems = result.uploaded_items || []
+    if (uploadedItems[0]?.category) activeCategory.value = uploadedItems[0].category
+    await refreshMaterials()
+    if (props.pickerMode && uploadedItems.length > 0) {
+      const next = new Map(selectedItems.value)
+      for (const item of uploadedItems) next.set(item.id, item)
+      selectedItems.value = next
+    }
+    toast('success', `已上传 ${result.files} 个素材`)
+  } catch (error) {
+    toast('error', readableError(error, '素材上传失败'))
+  } finally {
+    uploadingMaterials.value = false
+    input.value = ''
+  }
+}
+
 function confirmPicker() {
-  emit('pickerConfirm', Array.from(selectedItems.value.values()), selectedUpload.value, selectedDelivery.value)
+  emit('pickerConfirm', Array.from(selectedItems.value.values()), Array.from(selectedUploads.value.values()), selectedDelivery.value)
 }
 
 onMounted(refreshAll)
@@ -195,7 +311,7 @@ watch(activeCategory, refreshMaterials)
                 <div class="font-medium">{{ delivery.title || '未命名成片' }}</div>
                 <div class="mt-1 text-xs text-[#8a7857]">{{ delivery.project_name }} · {{ formatDate(delivery.created_at) }}</div>
               </div>
-              <input v-if="pickerMode" v-model="selectedDeliveryId" type="radio" :value="delivery.id">
+              <input v-if="pickerMode" :checked="selectedDeliveryId === delivery.id" type="radio" :value="delivery.id" @change="selectDelivery(delivery.id)">
             </div>
             <video v-if="delivery.video_url" class="h-52 w-full rounded-lg bg-black object-contain" controls :src="delivery.video_url" />
             <div v-else class="flex h-52 items-center justify-center rounded-lg bg-[#f2e8d6] text-sm text-[#867351]">{{ delivery.status }}</div>
@@ -203,26 +319,50 @@ watch(activeCategory, refreshMaterials)
           </article>
         </div>
 
-        <div v-else-if="tab === 'uploads'" class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          <article v-for="upload in uploads" :key="upload.id" class="rounded-lg border border-[#d7c7a8] bg-white/85 p-4">
-            <div class="mb-3 flex items-start justify-between gap-3">
-              <div>
-                <div class="font-medium">{{ upload.filename }}</div>
-                <div class="mt-1 text-xs text-[#8a7857]">{{ upload.project_name }} · {{ formatBytes(upload.file_size) }}</div>
+        <div v-else-if="tab === 'uploads'">
+          <div class="mb-5 flex items-center justify-between gap-3">
+            <div>
+              <h3 class="text-base font-semibold text-[#4c3b22]">参考视频</h3>
+              <p class="text-sm text-[#867351]">当前项目上传的视频会出现在这里。</p>
+            </div>
+            <label
+              class="rounded-lg border border-[#d7c7a8] bg-[#fff8ec] px-4 py-2 text-sm text-[#6d5936] hover:bg-[#f4ead8]"
+              :class="uploadingVideo ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'"
+            >
+              <input class="hidden" type="file" accept="video/*" :disabled="uploadingVideo" @change="handleVideoUpload">
+              {{ uploadingVideo ? `上传中 ${videoUploadProgress}%` : '上传参考视频' }}
+            </label>
+          </div>
+
+          <div v-if="uploads.length === 0" class="rounded-lg border border-[#d7c7a8] bg-white/75 p-5 text-sm text-[#867351]">
+            暂无参考视频。
+          </div>
+          <div v-else class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <article
+              v-for="upload in uploads"
+              :key="upload.id"
+              class="rounded-lg border bg-white/85 p-4"
+              :class="selectedUploads.has(upload.id) ? 'border-[#7e9d53] ring-2 ring-[#c9dda5]' : 'border-[#d7c7a8]'"
+            >
+              <div class="mb-3 flex items-start justify-between gap-3">
+                <div>
+                  <div class="font-medium">{{ upload.filename }}</div>
+                  <div class="mt-1 text-xs text-[#8a7857]">{{ upload.project_name }} · {{ formatBytes(upload.file_size) }}</div>
+                </div>
+                <input v-if="pickerMode" type="checkbox" :checked="selectedUploads.has(upload.id)" @change="toggleUpload(upload)">
               </div>
-              <input v-if="pickerMode" v-model="selectedUploadId" type="radio" :value="upload.id">
-            </div>
-            <video v-if="playingUploadId === upload.id" class="h-52 w-full rounded-lg bg-black object-contain" controls :src="upload.stream_url" />
-            <button v-else type="button" class="flex h-52 w-full items-center justify-center rounded-lg bg-[#f2e8d6] text-sm text-[#6d5936]" @click="playingUploadId = upload.id">
-              播放预览
-            </button>
-            <div class="mt-3 flex items-center justify-between">
-              <span class="text-xs text-[#8a7857]">{{ formatDate(upload.created_at) }}</span>
-              <button v-if="!pickerMode" type="button" class="rounded-lg border border-[#d7c7a8] px-3 py-1.5 text-xs hover:bg-[#f4ead8]" @click="removeUpload(upload)">
-                删除
+              <video v-if="playingUploadId === upload.id" class="h-52 w-full rounded-lg bg-black object-contain" controls :src="upload.stream_url" />
+              <button v-else type="button" class="flex h-52 w-full items-center justify-center rounded-lg bg-[#f2e8d6] text-sm text-[#6d5936]" @click="playingUploadId = upload.id">
+                播放预览
               </button>
-            </div>
-          </article>
+              <div class="mt-3 flex items-center justify-between">
+                <span class="text-xs text-[#8a7857]">{{ formatDate(upload.created_at) }}</span>
+                <button v-if="!pickerMode" type="button" class="rounded-lg border border-[#d7c7a8] px-3 py-1.5 text-xs hover:bg-[#f4ead8]" @click="removeUpload(upload)">
+                  删除
+                </button>
+              </div>
+            </article>
+          </div>
         </div>
 
         <div v-else-if="tab === 'assets'" class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -247,20 +387,30 @@ watch(activeCategory, refreshMaterials)
         </div>
 
         <div v-else>
-          <div class="mb-5 flex flex-wrap gap-2">
-            <button
-              v-for="category in categories"
-              :key="category.name"
-              type="button"
-              class="rounded-lg px-3 py-2 text-sm"
-              :class="activeCategory === category.name ? 'bg-[#7e9d53] text-white' : 'border border-[#d7c7a8] bg-[#fff8ec] text-[#6d5936]'"
-              @click="activeCategory = category.name"
+          <div class="mb-5 flex flex-wrap items-center justify-between gap-3">
+            <div class="flex flex-wrap gap-2">
+              <button
+                v-for="category in categories"
+                :key="category.name"
+                type="button"
+                class="rounded-lg px-3 py-2 text-sm"
+                :class="activeCategory === category.name ? 'bg-[#7e9d53] text-white' : 'border border-[#d7c7a8] bg-[#fff8ec] text-[#6d5936]'"
+                @click="activeCategory = category.name"
+              >
+                {{ category.name }} · {{ category.count }}
+              </button>
+            </div>
+            <label
+              class="rounded-lg border border-[#d7c7a8] bg-[#fff8ec] px-4 py-2 text-sm text-[#6d5936] hover:bg-[#f4ead8]"
+              :class="uploadingMaterials ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'"
             >
-              {{ category.name }} · {{ category.count }}
-            </button>
+              <input class="hidden" type="file" :accept="materialFileAccept" multiple :disabled="uploadingMaterials" @change="handleMaterialUpload">
+              {{ uploadingMaterials ? `上传中 ${materialUploadProgress}%` : '上传图片 / 音频素材' }}
+            </label>
           </div>
 
           <div v-if="loading" class="rounded-lg border border-[#d7c7a8] bg-white/75 p-5 text-sm text-[#867351]">加载中...</div>
+          <div v-else-if="materials.length === 0" class="rounded-lg border border-[#d7c7a8] bg-white/75 p-5 text-sm text-[#867351]">当前分类没有素材。</div>
           <div v-else class="grid gap-4 md:grid-cols-3 xl:grid-cols-4">
             <article
               v-for="item in materials"
@@ -268,14 +418,24 @@ watch(activeCategory, refreshMaterials)
               class="overflow-hidden rounded-lg border bg-white/90"
               :class="selectedItems.has(item.id) ? 'border-[#7e9d53] ring-2 ring-[#c9dda5]' : 'border-[#d7c7a8]'"
             >
-              <button type="button" class="block w-full text-left" @click="pickerMode ? toggleMaterial(item) : undefined">
-                <img v-if="item.media_type.startsWith('image')" class="h-36 w-full object-cover" :src="item.thumbnail_url || materialFileUrl(item)" :alt="item.filename">
+              <div
+                class="block w-full text-left"
+                role="button"
+                tabindex="0"
+                @click="pickerMode ? toggleMaterial(item) : undefined"
+                @keydown.enter.prevent="pickerMode ? toggleMaterial(item) : undefined"
+                @keydown.space.prevent="pickerMode ? toggleMaterial(item) : undefined"
+              >
+                <img v-if="isImageMaterial(item)" class="h-36 w-full object-cover" :src="item.thumbnail_url || materialFileUrl(item)" :alt="item.filename">
+                <div v-else-if="isAudioMaterial(item)" class="flex h-36 w-full items-center justify-center bg-[#f2e8d6] px-3">
+                  <audio class="w-full" controls :src="materialFileUrl(item)" @click.stop />
+                </div>
                 <video v-else class="h-36 w-full object-cover" :src="materialFileUrl(item)" muted />
                 <div class="p-3">
                   <div class="truncate text-sm font-medium">{{ item.filename }}</div>
-                  <div class="mt-1 text-xs text-[#8a7857]">{{ item.category }}</div>
+                  <div class="mt-1 text-xs text-[#8a7857]">{{ materialTypeLabel(item) }} · {{ item.category }}</div>
                 </div>
-              </button>
+              </div>
               <div class="border-t border-[#eadfca] p-3">
                 <button v-if="!pickerMode" type="button" class="rounded-lg border border-[#d7c7a8] px-3 py-1.5 text-xs hover:bg-[#f4ead8]" @click="removeMaterial(item)">
                   删除

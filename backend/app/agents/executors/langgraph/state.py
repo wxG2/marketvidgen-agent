@@ -8,8 +8,8 @@ from app.agents.core.base import AgentContext
 class LangGraphPipelineState(TypedDict, total=False):
     context: AgentContext
     input_config: dict
-    parsed_requirement: dict
     orchestrator_plan: dict
+    remix_plan: dict
     prompt_plan: dict
     audio: dict
     video_clips: dict

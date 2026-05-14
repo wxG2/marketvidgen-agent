@@ -6,12 +6,13 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_auto_chat_session_for_user, get_current_user, get_project_for_user
 from app.core.config import settings
 from app.db.session import get_db
+from app.models.auto_chat import AutoSessionReferenceVideoSelection
 from app.models.project import Project
 from app.models.user import User
 from app.models.video_upload import VideoUpload
@@ -76,6 +77,17 @@ async def upload_video(
         session.status_preview = "参考视频已上传"
         if session.title in {"新会话", "默认会话"}:
             session.title = (upload.filename or "参考视频")[:24]
+        await db.execute(
+            delete(AutoSessionReferenceVideoSelection)
+            .where(AutoSessionReferenceVideoSelection.session_id == session.id)
+        )
+        db.add(
+            AutoSessionReferenceVideoSelection(
+                session_id=session.id,
+                video_upload_id=upload.id,
+                sort_order=0,
+            )
+        )
     await db.commit()
     await db.refresh(upload)
     return upload

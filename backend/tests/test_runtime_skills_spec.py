@@ -5,6 +5,8 @@ from app.agents.skills import (
     ANALYZE_VIDEO_SKILL,
     GENERATE_VIDEO_INPUT_SCHEMA,
     GENERATE_VIDEO_SKILL,
+    REMIX_VIDEO_INPUT_SCHEMA,
+    REMIX_VIDEO_SKILL,
     REPLICATE_VIDEO_INPUT_SCHEMA,
     REPLICATE_VIDEO_SKILL,
 )
@@ -15,7 +17,7 @@ async def _noop_tool(**kwargs):
 
 
 def test_runtime_skill_specs_expose_required_metadata():
-    for skill in (ANALYZE_VIDEO_SKILL, GENERATE_VIDEO_SKILL, REPLICATE_VIDEO_SKILL):
+    for skill in (ANALYZE_VIDEO_SKILL, GENERATE_VIDEO_SKILL, REMIX_VIDEO_SKILL, REPLICATE_VIDEO_SKILL):
         metadata = skill.metadata()
         assert metadata["skill_name"]
         assert metadata["name"]
@@ -34,6 +36,7 @@ def test_runtime_skill_specs_expose_required_metadata():
 def test_runtime_skill_specs_convert_to_tool_definitions():
     analyze_tool = ANALYZE_VIDEO_SKILL.to_tool_definition(_noop_tool)
     generate_tool = GENERATE_VIDEO_SKILL.to_tool_definition(_noop_tool)
+    remix_tool = REMIX_VIDEO_SKILL.to_tool_definition(_noop_tool)
     replicate_tool = REPLICATE_VIDEO_SKILL.to_tool_definition(_noop_tool)
 
     assert analyze_tool.name == "analyze_video"
@@ -43,6 +46,10 @@ def test_runtime_skill_specs_convert_to_tool_definitions():
     assert generate_tool.name == "generate_video"
     assert generate_tool.input_schema == GENERATE_VIDEO_INPUT_SCHEMA
     assert generate_tool.required_permission == "generate_video"
+
+    assert remix_tool.name == "remix_video"
+    assert remix_tool.input_schema == REMIX_VIDEO_INPUT_SCHEMA
+    assert remix_tool.required_permission == "remix_video"
 
     assert replicate_tool.name == "replicate_video"
     assert replicate_tool.input_schema == REPLICATE_VIDEO_INPUT_SCHEMA

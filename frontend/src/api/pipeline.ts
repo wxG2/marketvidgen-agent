@@ -8,6 +8,7 @@ import type {
   PipelineDeliveryInfo,
   VideoDeliveryRecord,
   RepositoryAsset,
+  RemixSegmentEdit,
 } from '../types'
 
 export const launchPipeline = (projectId: string, config: PipelineConfig) =>
@@ -70,6 +71,21 @@ export const confirmReplicationPlan = (
   api.post(`/api/projects/${projectId}/pipeline/${runId}/confirm-plan`, {
     approved,
     adjustments: adjustments || null,
+  }).then(r => r.data)
+
+export const confirmRemixPlan = (
+  projectId: string,
+  runId: string,
+  payload: {
+    approved: boolean
+    adjustments?: string | null
+    edited_segments?: RemixSegmentEdit[]
+  },
+) =>
+  api.post(`/api/projects/${projectId}/pipeline/${runId}/confirm-remix`, {
+    approved: payload.approved,
+    adjustments: payload.adjustments || null,
+    edited_segments: payload.edited_segments || [],
   }).then(r => r.data)
 
 export interface PreflightCheckResult {

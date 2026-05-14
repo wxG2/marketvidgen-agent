@@ -7,12 +7,25 @@ from pydantic import BaseModel, Field
 from app.schemas.social_account import PublishDraftResponse, SocialAccountResponse
 
 
+class RemixConfigRequest(BaseModel):
+    target_duration_seconds: Optional[float] = Field(default=None, ge=1, le=300)
+    mood: Optional[str] = Field(default=None, max_length=80)
+    bgm_material_id: Optional[str] = None
+    bgm_mood: Literal["none", "upbeat", "calm", "cinematic", "energetic"] = "cinematic"
+    bgm_volume: float = Field(default=0.15, ge=0, le=1)
+    include_source_audio: bool = False
+    add_voiceover: bool = True
+    voiceover_script: Optional[str] = Field(default=None, max_length=8000)
+
+
 class PipelineCreateRequest(BaseModel):
     script: str = Field(default="", max_length=8000)  # free-form user input: script or requirement description
     image_ids: list[str] = Field(default_factory=list, max_length=100)  # Material IDs
     session_id: Optional[str] = None
     background_template_id: Optional[str] = None
     reference_video_id: Optional[str] = None  # VideoUpload ID for replication mode
+    reference_video_ids: list[str] = Field(default_factory=list, max_length=20)  # VideoUpload IDs for remix mode
+    remix_config: Optional[RemixConfigRequest] = None
     platform: Literal["douyin", "xiaohongshu", "bilibili", "generic"] = "generic"
     duration_seconds: int = Field(default=30, ge=1, le=300)
     duration_mode: Literal["auto", "fixed"] = "fixed"
@@ -33,6 +46,21 @@ class PipelineCreateRequest(BaseModel):
 class ConfirmPlanRequest(BaseModel):
     approved: bool
     adjustments: Optional[str] = Field(default=None, max_length=4000)  # user feedback when not approved
+
+
+class RemixSegmentEdit(BaseModel):
+    segment_idx: int = Field(ge=0)
+    source_video_id: Optional[str] = None
+    start_seconds: Optional[float] = Field(default=None, ge=0)
+    end_seconds: Optional[float] = Field(default=None, ge=0)
+    transition_type: Optional[Literal["cut", "fade", "dissolve", "slideright", "slideup"]] = None
+    removed: bool = False
+
+
+class ConfirmRemixRequest(BaseModel):
+    approved: bool
+    adjustments: Optional[str] = Field(default=None, max_length=4000)
+    edited_segments: list[RemixSegmentEdit] = Field(default_factory=list, max_length=100)
 
 
 class ShotEditRequest(BaseModel):

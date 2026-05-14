@@ -23,11 +23,15 @@ from app.schemas.material import (
 )
 from app.services.material_service import (
     get_categories, get_materials_by_category, scan_materials,
-    index_uploaded_file, delete_material, delete_category,
+    index_uploaded_file, delete_material, delete_category, get_media_type,
 )
 from app.services.upload_validation import validate_upload_file
 
 router = APIRouter(tags=["materials"])
+
+
+def _upload_kind_for_material(filename: str | None) -> str:
+    return "audio" if get_media_type(filename or "") == "audio" else "image"
 
 
 @router.post("/api/materials/scan")
@@ -69,7 +73,7 @@ async def upload_materials(
             else:
                 category = "未分类"
 
-            validated = await validate_upload_file(file, kind="image")
+            validated = await validate_upload_file(file, kind=_upload_kind_for_material(file.filename))
             raw_filename = file.filename or f"file_{i}"
             filename = validated.filename
 
@@ -133,7 +137,7 @@ async def upload_project_materials(
             else:
                 category = "未分类"
 
-            validated = await validate_upload_file(file, kind="image")
+            validated = await validate_upload_file(file, kind=_upload_kind_for_material(file.filename))
             filename = validated.filename
             material = await index_uploaded_file(db, settings.MATERIALS_ROOT, user.id, category, filename, validated.content)
             if not material:

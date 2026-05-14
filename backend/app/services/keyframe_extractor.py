@@ -83,7 +83,7 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
             settings.FFMPEG_BIN,
             "-i", video_path,
             "-vf", f"select='gt(scene,{threshold})',showinfo",
-            "-vsync", "vfn",
+            "-fps_mode", "vfr",
             "-frames:v", str(max_frames),
             "-q:v", "2",
             pattern,

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
@@ -23,7 +23,12 @@ from app.core.security import (
 )
 from app.core.config import settings
 from app.db.session import async_session, get_db
-from app.models.auto_chat import AutoChatMessage, AutoChatSession, AutoSessionMaterialSelection
+from app.models.auto_chat import (
+    AutoChatMessage,
+    AutoChatSession,
+    AutoSessionMaterialSelection,
+    AutoSessionReferenceVideoSelection,
+)
 from app.models.material import Material
 from app.models.material_selection import MaterialSelection
 from app.models.pipeline import AgentExecution, PipelineRun
@@ -73,7 +78,7 @@ INTRO_MESSAGE = (
 )
 CHAT_STREAM_TIMEOUT_SECONDS = 180
 CHAT_STREAM_HEARTBEAT_SECONDS = 10
-CHAT_ERROR_LOG_PATH = Path(settings.GENERATED_DIR) / "chat_agent_error_log.md"
+CHAT_ERROR_LOG_PATH = Path(settings.GENERATED_DIR) / "orchestrator_chat_error_log.md"
 
 
 def _utcnow() -> datetime:
@@ -247,6 +252,7 @@ def _derive_status_preview(session: AutoChatSession, latest_message: AutoChatMes
             "cancelled": "已取消",
             "waiting_confirmation": "等待确认方案",
             "waiting_prompt_review": "等待确认镜头方案",
+            "waiting_remix_confirmation": "等待确认混剪方案",
         }
         return status_map.get(run.status, run.status)
     if latest_message and latest_message.role == "assistant":
@@ -266,6 +272,78 @@ def _derive_title(current_title: str, role: str, content: str, reference_video_n
     return current_title
 
 
+def _unique_video_ids(video_ids: list[str] | None) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for video_id in video_ids or []:
+        if not video_id or video_id in seen:
+            continue
+        seen.add(video_id)
+        unique.append(video_id)
+        if len(unique) > 20:
+            raise HTTPException(status_code=400, detail="Reference video selection is limited to 20 videos")
+    return unique
+
+
+async def _validate_reference_videos(
+    db: AsyncSession,
+    *,
+    project_id: str,
+    video_ids: list[str],
+) -> list[VideoUpload]:
+    uploads: list[VideoUpload] = []
+    for video_id in _unique_video_ids(video_ids):
+        upload = await db.get(VideoUpload, video_id)
+        if not upload or upload.project_id != project_id:
+            raise HTTPException(status_code=400, detail="Reference video does not belong to this project")
+        uploads.append(upload)
+    return uploads
+
+
+async def _replace_session_reference_videos(
+    db: AsyncSession,
+    session: AutoChatSession,
+    uploads: list[VideoUpload],
+) -> None:
+    await db.execute(
+        delete(AutoSessionReferenceVideoSelection)
+        .where(AutoSessionReferenceVideoSelection.session_id == session.id)
+    )
+    for index, upload in enumerate(uploads):
+        db.add(
+            AutoSessionReferenceVideoSelection(
+                session_id=session.id,
+                video_upload_id=upload.id,
+                sort_order=index,
+            )
+        )
+    session.reference_video_id = uploads[0].id if uploads else None
+
+
+async def _load_session_reference_videos(
+    db: AsyncSession,
+    session: AutoChatSession,
+) -> list[VideoUpload]:
+    result = await db.execute(
+        select(AutoSessionReferenceVideoSelection)
+        .where(AutoSessionReferenceVideoSelection.session_id == session.id)
+        .order_by(
+            AutoSessionReferenceVideoSelection.sort_order.asc(),
+            AutoSessionReferenceVideoSelection.created_at.asc(),
+        )
+    )
+    videos: list[VideoUpload] = []
+    for selection in result.scalars().all():
+        upload = await db.get(VideoUpload, selection.video_upload_id)
+        if upload and upload.project_id == session.project_id:
+            videos.append(upload)
+    if not videos and session.reference_video_id:
+        upload = await db.get(VideoUpload, session.reference_video_id)
+        if upload and upload.project_id == session.project_id:
+            videos.append(upload)
+    return videos
+
+
 async def _build_session_summary(
     db: AsyncSession,
     session: AutoChatSession,
@@ -279,7 +357,12 @@ async def _build_session_summary(
         )
     ).scalars().first()
     run = await db.get(PipelineRun, session.current_run_id) if session.current_run_id else None
-    reference_video = await db.get(VideoUpload, session.reference_video_id) if session.reference_video_id else None
+    reference_videos = await _load_session_reference_videos(db, session)
+    reference_video_name = None
+    if len(reference_videos) == 1:
+        reference_video_name = reference_videos[0].filename
+    elif len(reference_videos) > 1:
+        reference_video_name = f"{reference_videos[0].filename} 等 {len(reference_videos)} 个"
     return AutoChatSessionSummaryResponse(
         id=session.id,
         project_id=session.project_id,
@@ -287,7 +370,7 @@ async def _build_session_summary(
         status_preview=_derive_status_preview(session, latest_message, run),
         latest_message_excerpt=_compact_excerpt(latest_message.content if latest_message else None),
         latest_message_role=latest_message.role if latest_message else None,
-        reference_video_name=reference_video.filename if reference_video else None,
+        reference_video_name=reference_video_name,
         current_run_id=session.current_run_id,
         current_run_status=run.status if run else None,
         last_activity_at=session.last_activity_at,
@@ -458,7 +541,7 @@ async def _ensure_default_session(db: AsyncSession, user: User, project_id: str)
         session.status_preview = _derive_status_preview(session, None, latest_run)
         session.last_activity_at = latest_run.updated_at
     if latest_video:
-        session.reference_video_id = latest_video.id
+        await _replace_session_reference_videos(db, session, [latest_video])
         if session.title == "默认会话" and not latest_run:
             session.title = latest_video.filename[:24]
 
@@ -507,7 +590,8 @@ async def _session_detail(
                 }
             )
 
-    reference_video = await db.get(VideoUpload, session.reference_video_id) if session.reference_video_id else None
+    reference_videos = await _load_session_reference_videos(db, session)
+    reference_video = reference_videos[0] if reference_videos else None
     run = await db.get(PipelineRun, session.current_run_id) if session.current_run_id else None
 
     execution_responses: list[AgentExecutionResponse] = []
@@ -559,6 +643,7 @@ async def _session_detail(
             draft_script=session.draft_script,
             background_template_id=session.background_template_id,
             reference_video_id=session.reference_video_id,
+            reference_video_ids=[item.id for item in reference_videos],
             video_platform=session.video_platform,
             video_no_audio=session.video_no_audio,
             video_model_no_audio=session.video_no_audio,
@@ -573,6 +658,7 @@ async def _session_detail(
         selected_materials=selections,
         selected_material_items=selection_items,
         reference_video=VideoUploadResponse.model_validate(reference_video) if reference_video else None,
+        reference_videos=[VideoUploadResponse.model_validate(item) for item in reference_videos],
         current_run=_run_to_response(run) if run else None,
         agent_executions=execution_responses,
         delivery_info=delivery_info,
@@ -618,11 +704,13 @@ async def _load_session_context(
         }
         for item in material_result.scalars().all()
     ]
+    reference_videos = await _load_session_reference_videos(db, session)
     return {
         "project_id": session.project_id,
         "session_id": session.id,
         "user_id": user.id,
-        "reference_video_id": session.reference_video_id,
+        "reference_video_id": reference_videos[0].id if reference_videos else session.reference_video_id,
+        "reference_video_ids": [item.id for item in reference_videos],
         "background_template_id": session.background_template_id,
         "draft_script": session.draft_script,
         "platform": session.video_platform or "generic",
@@ -707,17 +795,26 @@ async def update_auto_session(
         run = await get_pipeline_run_for_user(db, user.id, req.current_run_id)
         if run.project_id != project_id or run.session_id != session.id:
             raise HTTPException(status_code=400, detail="Pipeline run does not belong to this session")
-    if req.reference_video_id:
-        upload = await db.get(VideoUpload, req.reference_video_id)
-        if not upload or upload.project_id != project_id or upload.session_id != session.id:
-            raise HTTPException(status_code=400, detail="Reference video does not belong to this session")
+    if req.reference_video_ids is not None:
+        uploads = await _validate_reference_videos(
+            db,
+            project_id=project_id,
+            video_ids=req.reference_video_ids,
+        )
+        await _replace_session_reference_videos(db, session, uploads)
+    elif req.reference_video_id:
+        uploads = await _validate_reference_videos(
+            db,
+            project_id=project_id,
+            video_ids=[req.reference_video_id],
+        )
+        await _replace_session_reference_videos(db, session, uploads)
 
     for field in (
         "title",
         "status_preview",
         "draft_script",
         "background_template_id",
-        "reference_video_id",
         "video_platform",
         "video_no_audio",
         "video_model_no_audio",
@@ -778,9 +875,9 @@ async def chat_with_agent(
 ):
     await get_project_for_user(db, user.id, project_id)
     session = await get_auto_chat_session_for_user(db, user.id, project_id, session_id)
-    chat_agent = getattr(request.app.state, "chat_agent", None)
-    if chat_agent is None:
-        raise HTTPException(status_code=503, detail="Chat agent is not ready")
+    orchestrator_agent = getattr(request.app.state, "orchestrator_agent", None)
+    if orchestrator_agent is None:
+        raise HTTPException(status_code=503, detail="Orchestrator agent is not ready")
 
     reference_video = await db.get(VideoUpload, session.reference_video_id) if session.reference_video_id else None
     user_message = AutoChatMessage(
@@ -798,7 +895,6 @@ async def chat_with_agent(
 
     history = await _load_recent_messages(db, session.id)
     session_context = await _load_session_context(db, session, user)
-    session_context["force_tool"] = req.force_tool
     session_context["generation_model"] = req.generation_model
     if req.video_model_no_audio is not None:
         session_context["video_model_no_audio"] = req.video_model_no_audio
@@ -809,7 +905,7 @@ async def chat_with_agent(
 
     async def event_generator():
         collected_text: list[str] = []
-        stream = chat_agent.chat_stream(history, session_context)
+        stream = orchestrator_agent.chat_stream(history, session_context)
 
         async def _persist_assistant_message(content: str) -> dict | None:
             normalized_content = _normalize_chat_reply_content(content)

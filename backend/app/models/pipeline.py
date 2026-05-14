@@ -14,7 +14,7 @@ class PipelineRun(Base):
     __tablename__ = "pipeline_runs"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'running', 'completed', 'failed', 'cancelled', 'waiting_confirmation', 'waiting_prompt_review')",
+            "status IN ('pending', 'running', 'completed', 'failed', 'cancelled', 'waiting_confirmation', 'waiting_prompt_review', 'waiting_remix_confirmation')",
             name="status",
         ),
         CheckConstraint("retry_count >= 0", name="retry_count_non_negative"),

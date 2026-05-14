@@ -4,3 +4,7 @@ class WaitingConfirmation(Exception):
 
 class WaitingPromptReview(Exception):
     """Raised after PromptEngineer when HITL prompt review is enabled."""
+
+
+class WaitingRemixConfirmation(Exception):
+    """Raised when the remix planner needs user confirmation before assembly."""

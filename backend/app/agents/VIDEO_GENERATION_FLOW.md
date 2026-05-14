@@ -9,8 +9,8 @@
 ```text
 Frontend AutoModeStudio
   -> POST /api/projects/{project_id}/auto-sessions/{session_id}/chat
-  -> ChatAgent
-  -> generate_video 或 replicate_video runtime skill
+  -> OrchestratorAgent.chat_stream
+  -> generate_video / remix_video / replicate_video / analyze_video runtime skill
   -> PipelineRun.input_config
   -> LangGraphPipelineExecutor
   -> Stage Agents
@@ -44,14 +44,13 @@ START
 
 ## 用户消息到 input_config
 
-前端不会直接构造 pipeline 的 `input_config`。前端只把用户消息、可选附件展示信息、强制工具名和当前视频模型发送给后端：
+前端不会直接构造 pipeline 的 `input_config`。前端只把用户消息、可选附件展示信息和当前视频模型发送给后端：
 
 - `content`: 用户输入文本
 - `payload.images/files`: 消息展示用附件信息
-- `force_tool`: 可选，强制调用某个 runtime skill
 - `generation_model`: 当前选择的视频生成模型
 
-后端 `ChatAgent` 会根据消息和会话上下文判断是否调用 runtime skill。命中 `generate_video` 后，会把两类数据合并成 skill 参数：
+后端 `OrchestratorAgent.chat_stream(...)` 会根据消息和会话上下文判断是否调用 runtime skill。命中 `generate_video` 后，会把两类数据合并成 skill 参数：
 
 - 从用户最新消息或 LLM 参数提取得到的 `tool_args`，例如 `user_request`、`narration_script`、`platform`、`duration_mode`、`style`
 - 从 `session_context` 得到的默认参数，例如 `project_id`、`session_id`、`user_id`、`image_ids`、`draft_script`、`video_model_no_audio`、`video_transition`、`bgm_mood`
@@ -132,15 +131,15 @@ intake
   -> finalize
 ```
 
-在普通生成链路中，用户输入只由 ChatAgent/runtime skill 进入 pipeline，后续视频生产阶段不再直接向用户提问；Orchestrator 负责把用户消息和图片解析为导演输入上下文，再交给内部的 PromptEngineer、AudioSubtitle、VideoGenerator 和 VideoEditor。
+在普通生成链路中，用户输入由 Orchestrator runtime skill 进入 pipeline，后续视频生产阶段不再直接向用户提问；Orchestrator 的 pipeline 阶段负责把用户消息和图片解析为导演输入上下文，再交给内部的 PromptEngineer、AudioSubtitle、VideoGenerator 和 VideoEditor。
 
 ## Agent 输入输出
 
-### ChatAgent
+### Orchestrator chat entry
 
-文件：`backend/app/agents/chat/agent.py`
+文件：`backend/app/agents/stages/orchestrator.py` 与 `backend/app/agents/stages/orchestrator_chat.py`
 
-职责：判断用户消息是普通对话，还是需要调用 runtime skill；如果调用视频生成类 skill，则提取参数并补齐会话上下文。
+职责：判断用户消息是普通对话，还是需要调用 runtime skill；如果调用视频生成类 skill，则补齐会话上下文并执行对应 skill。
 
 输入：
 
@@ -157,6 +156,7 @@ session_context: dict
     "session_id": str,
     "user_id": str,
     "reference_video_id": str | None,
+    "reference_video_ids": list[str],
     "background_template_id": str | None,
     "draft_script": str | None,
     "platform": str,
@@ -167,7 +167,6 @@ session_context: dict
     "bgm_mood": str,
     "watermark_id": str | None,
     "selected_materials": list[dict],
-    "force_tool": str | None,
     "generation_model": str | None,
 }
 ```
@@ -176,13 +175,13 @@ session_context: dict
 
 - 普通聊天：流式 `text/status/done` 事件
 - 工具调用：`tool_call/tool_result/status/done` 事件
-- 对视频生成：调用 `generate_video(...)` 或 `replicate_video(...)`，由 runtime skill 创建 `PipelineRun`
+- 对视频生成：调用 `generate_video(...)`、`remix_video(...)` 或 `replicate_video(...)`，由 runtime skill 创建 `PipelineRun`
 
 ### generate_video Skill
 
 文件：`backend/app/agents/skills/generate-video/runtime.py`
 
-职责：把 ChatAgent 提取出的生成参数转成 pipeline `input_config`，创建 `PipelineRun`，并后台启动 executor。
+职责：把 Orchestrator 会话入口补齐的生成参数转成 pipeline `input_config`，创建 `PipelineRun`，并后台启动 executor。
 
 输入：
 
@@ -273,6 +272,39 @@ session_context: dict
     "generation_model": generation_model,
     "style": style,
     ...
+}
+```
+
+### remix_video Skill
+
+文件：`backend/app/agents/skills/remix-video/runtime.py`
+
+职责：根据当前会话 2 个及以上参考视频创建混剪型 pipeline run。它会设置 `reference_video_ids`，使 LangGraph 首节点进入 `remix_planner`，后续等待 `confirm-remix`；确认后若启用旁白，会先生成 / 复用 TTS 音频并按真实音频时长调整混剪时间线，必要时重跑规划并再次等待确认，最后再由 `remix_assembler` 抽片拼接。
+
+输入：
+
+```python
+{
+    "project_id": str,
+    "session_id": str,
+    "user_id": str,
+    "reference_video_ids": list[str],
+    "direction": str,
+    "platform": str,
+    "style": str,
+    "generation_model": str | None,
+    "background_template_id": str | None,
+}
+```
+
+输出：
+
+```python
+{
+    "run_id": str,
+    "status": "started",
+    "message": "已启动多视频混剪流程，完成规划后会暂停等待确认。",
+    "run": dict,
 }
 ```
 
@@ -416,6 +448,17 @@ session_context: dict
 ```
 
 注意：当 `requires_confirmation=True` 时，LangGraph 节点会抛出 `WaitingConfirmation`，pipeline 状态变为 `waiting_confirmation`。用户确认后，后端会把复刻方案转换成普通 `orchestrator_plan`，再继续后续节点。
+
+### RemixPlannerAgent / RemixAssemblerAgent
+
+文件：
+
+- `backend/app/agents/stages/remix_planner.py`
+- `backend/app/agents/stages/remix_assembler.py`
+
+职责：多视频混剪链路。`reference_video_ids` 包含 2 个及以上视频时，执行器先进入 `RemixPlannerAgent`，生成 `remix_plan` 并暂停为 `waiting_remix_confirmation`。用户确认后，若 `remix_config.add_voiceover=true`，执行器会先复用 `AudioSubtitleAgent` 生成或复用旁白音频 / 字幕，以真实音频时长调整 `remix_plan.target_duration_seconds` 和片段起止时间；若当前片段无法覆盖旁白长度，会把 `remix_config.target_duration_seconds` 更新为音频时长，自动重跑 `RemixPlannerAgent`，并再次等待用户确认。
+
+`RemixAssemblerAgent` 只在时间线可覆盖旁白音频后执行：它从源视频抽取已确认片段，拼接转场，按 `audio_design.strategy` 处理源声、BGM 或静音，并把旁白音轨混入最终视频。混剪字幕烧录复用普通剪辑链路的透明 PNG overlay 渲染方式，通过 FFmpeg `overlay` filter 叠加，不依赖 FFmpeg `subtitles` filter。
 
 ### PromptEngineerAgent
 

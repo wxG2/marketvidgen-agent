@@ -84,7 +84,7 @@ class RuntimeSkillSpec:
     """Project-local runtime skill contract for Python-backed chat skills.
 
     These skills are not filesystem `SKILL.md` packages. They are function-
-    calling tools exposed to `ChatAgent`, so we keep snake_case names that
+    calling tools exposed to Orchestrator chat routing, so we keep snake_case names that
     match tool invocation identifiers while still preserving the same
     design-time metadata: routing description, boundaries, required inputs,
     validation rules, and invocation policy.

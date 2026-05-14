@@ -3,11 +3,13 @@ from __future__ import annotations
 import logging
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 from sqlalchemy import select
 
 from app.agents.core.base import AgentContext, AgentResult, BaseAgent, describe_exception
+from app.agents.core.tool_registry import ToolRegistry
+from app.agents.stages.orchestrator_chat import OrchestratorChatCoordinator, OrchestratorChatEvent
 from app.agents.stages.llm_diagnostics import llm_failure_label, short_error
 from app.agents.stages.orchestrator_utils import (
     _as_string_or_empty,
@@ -52,6 +54,26 @@ class OrchestratorAgent(BaseAgent):
 
     def __init__(self, llm_service: LLMService):
         self.llm = llm_service
+        self._chat_coordinator: OrchestratorChatCoordinator | None = None
+
+    def configure_chat(self, *, tool_registry: ToolRegistry, mem0=None) -> None:
+        self._chat_coordinator = OrchestratorChatCoordinator(
+            llm=self.llm,
+            tool_registry=tool_registry,
+            mem0=mem0,
+        )
+
+    async def chat_stream(
+        self,
+        messages: list[dict[str, str]],
+        session_context: dict[str, Any],
+    ) -> AsyncIterator[OrchestratorChatEvent]:
+        if self._chat_coordinator is None:
+            yield OrchestratorChatEvent(type="text", content="Orchestrator 会话入口尚未初始化。")
+            yield OrchestratorChatEvent(type="done")
+            return
+        async for event in self._chat_coordinator.chat_stream(messages, session_context):
+            yield event
 
     async def _transition(
         self,

@@ -1,47 +1,36 @@
 from __future__ import annotations
 
-import asyncio
 import logging
-from app.agents.executors.langgraph.exceptions import WaitingConfirmation, WaitingPromptReview
+import asyncio
+
+from app.agents.executors.langgraph.exceptions import (
+    WaitingConfirmation,
+    WaitingPromptReview,
+    WaitingRemixConfirmation,
+)
 
 from app.agents.executors.langgraph.state import LangGraphPipelineState
 from app.core.config import settings
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from app.agents.stages.requirement_parser import RequirementParserAgent
     from app.agents.stages.orchestrator import OrchestratorAgent
     from app.agents.stages.prompt_engineer import PromptEngineerAgent
     from app.agents.stages.audio_subtitle import AudioSubtitleAgent
     from app.agents.stages.video_editor import VideoEditorAgent
     from app.agents.stages.video_generator import VideoGeneratorAgent
+    from app.agents.stages.remix_assembler import RemixAssemblerAgent
+    from app.agents.stages.remix_planner import RemixPlannerAgent
 logger = logging.getLogger(__name__)
 
 class LangGraphPipelineNodeMixin:
     """Node implementations for the LangGraph video pipeline."""
-    requirement_parser: "RequirementParserAgent | None"
     orchestrator: "OrchestratorAgent"
     prompt_engineer: "PromptEngineerAgent"
     audio_agent: "AudioSubtitleAgent"
     video_gen_agent: "VideoGeneratorAgent"
     editor_agent: "VideoEditorAgent"
-
-    async def _requirement_parser_node(self, state: LangGraphPipelineState) -> LangGraphPipelineState:
-        context = state["context"]
-        input_config = state["input_config"]
-        if self.requirement_parser is None or input_config.get("reference_video_id"):
-            return {}
-
-        result = await self.requirement_parser.run(
-            context,
-            self.build_agent_input("requirement_parser", context.artifacts, input_config),
-        )
-        if result.success:
-            context.artifacts["parsed_requirement"] = result.output_data
-            await context.save_checkpoint()
-            return {"parsed_requirement": result.output_data}
-
-        logger.warning("Requirement Parser failed; continuing with raw input: %s", result.error)
-        return {}
+    remix_planner: "RemixPlannerAgent | None"
+    remix_assembler: "RemixAssemblerAgent | None"
 
     async def _orchestrator_node(self, state: LangGraphPipelineState) -> LangGraphPipelineState:
         context = state["context"]
@@ -70,6 +59,40 @@ class LangGraphPipelineNodeMixin:
             raise WaitingConfirmation()
 
         return {"orchestrator_plan": result.output_data}
+
+    async def _remix_planner_node(self, state: LangGraphPipelineState) -> LangGraphPipelineState:
+        if self.remix_planner is None:
+            raise RuntimeError("Remix planner is not configured")
+        context = state["context"]
+        input_config = state["input_config"]
+        result = await self.remix_planner.run(context, input_config)
+        if not result.success:
+            raise RuntimeError(f"Remix Planner failed: {result.error}")
+
+        remix_plan = result.output_data.get("remix_plan", {})
+        context.artifacts["remix_plan"] = remix_plan
+        context.artifacts["remix_planner"] = result.output_data
+        await context.save_checkpoint()
+
+        if result.output_data.get("requires_confirmation"):
+            raise WaitingRemixConfirmation()
+
+        return {"remix_plan": remix_plan}
+
+    async def _remix_assembler_node(self, state: LangGraphPipelineState) -> LangGraphPipelineState:
+        if self.remix_assembler is None:
+            raise RuntimeError("Remix assembler is not configured")
+        context = state["context"]
+        waiting_result = await self.prepare_remix_after_audio(context, state["input_config"])
+        if waiting_result:
+            raise WaitingRemixConfirmation()
+        input_config = self.build_remix_assembler_input(context.artifacts, state["input_config"])
+        result = await self.remix_assembler.run(context, input_config)
+        if not result.success:
+            raise RuntimeError(f"Remix Assembler failed: {result.error}")
+        context.artifacts["final_video"] = result.output_data
+        await context.save_checkpoint()
+        return {"final_video": result.output_data}
 
     async def _prompt_engineer_node(self, state: LangGraphPipelineState) -> LangGraphPipelineState:
         context = state["context"]
@@ -187,6 +210,22 @@ class LangGraphPipelineNodeMixin:
         await context.save_checkpoint()
         return await self._run_av_editor_qa(context, input_config)
 
+    async def resume_from_remix_confirmation(self, context, input_config: dict) -> dict:
+        if self.remix_assembler is None:
+            raise RuntimeError("Remix assembler is not configured")
+        waiting_result = await self.prepare_remix_after_audio(context, input_config)
+        if waiting_result:
+            return waiting_result
+        result = await self.remix_assembler.run(
+            context,
+            self.build_remix_assembler_input(context.artifacts, input_config),
+        )
+        if not result.success:
+            raise RuntimeError(f"Remix Assembler failed: {result.error}")
+        context.artifacts["final_video"] = result.output_data
+        await context.save_checkpoint()
+        return result.output_data
+
     async def resume_from_prompt_review(self, context, input_config: dict) -> dict:
         return await self._run_av_editor_qa(context, input_config)
 
@@ -253,6 +292,9 @@ class LangGraphPipelineNodeMixin:
 
         if agent_name == "video_editor":
             await self._run_qa_after_retry(context, input_config)
+            return context.artifacts.get("final_video", {})
+
+        if agent_name == "remix_assembler":
             return context.artifacts.get("final_video", {})
 
         if agent_name == "qa_reviewer":

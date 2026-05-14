@@ -6,6 +6,8 @@ export interface PipelineConfig {
   image_ids: string[]
   session_id?: string | null
   reference_video_id?: string | null
+  reference_video_ids?: string[]
+  remix_config?: RemixConfig | null
   background_template_id?: string | null
   platform: string
   duration_seconds: number
@@ -23,6 +25,54 @@ export interface PipelineConfig {
   watermark_image_id?: string | null
 }
 
+export interface RemixConfig {
+  target_duration_seconds?: number | null
+  mood?: string | null
+  bgm_material_id?: string | null
+  bgm_mood?: string
+  bgm_volume?: number
+  include_source_audio?: boolean
+  add_voiceover?: boolean
+  voiceover_script?: string | null
+}
+
+export interface RemixPlanSegment {
+  segment_idx: number
+  source_video_id: string
+  source_shot_idx?: number
+  start_seconds: number
+  end_seconds: number
+  description?: string
+  script_segment?: string
+  narration?: string
+  voiceover?: string
+  role?: string
+  quality_score?: number
+  transition_to_next?: string
+  transition_duration?: number
+  reference_keyframe_path?: string
+  removed?: boolean
+}
+
+export interface RemixPlan {
+  title?: string
+  concept?: string
+  target_duration_seconds?: number
+  source_videos?: Array<Record<string, unknown>>
+  segments: RemixPlanSegment[]
+  audio_design?: Record<string, unknown>
+  analysis_report?: string
+}
+
+export interface RemixSegmentEdit {
+  segment_idx: number
+  source_video_id?: string
+  start_seconds?: number
+  end_seconds?: number
+  transition_type?: string
+  removed?: boolean
+}
+
 export interface GenerateScriptResponse {
   script: string
 }
@@ -33,7 +83,7 @@ export interface PipelineRun {
   session_id?: string | null
   trace_id: string
   engine: string
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'waiting_confirmation' | 'waiting_prompt_review'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'waiting_confirmation' | 'waiting_prompt_review' | 'waiting_remix_confirmation'
   current_agent: string | null
   overall_score: number | null
   final_video_path: string | null
@@ -145,6 +195,7 @@ export interface AutoChatSessionState {
   draft_script: string | null
   background_template_id: string | null
   reference_video_id: string | null
+  reference_video_ids: string[]
   video_platform: string
   video_no_audio: boolean
   video_model_no_audio?: boolean
@@ -190,6 +241,7 @@ export interface AutoChatSessionDetail {
   selected_materials: MaterialSelection[]
   selected_material_items: MaterialItem[]
   reference_video: VideoUpload | null
+  reference_videos: VideoUpload[]
   current_run: PipelineRun | null
   agent_executions: AgentExecution[]
   delivery_info: PipelineDeliveryInfo | null

@@ -6,13 +6,13 @@ import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_auto_chat_session_for_user, get_current_user, get_project_for_user
 from app.core.config import settings
 from app.db.session import get_db
-from app.models.auto_chat import AutoChatSession
+from app.models.auto_chat import AutoChatSession, AutoSessionReferenceVideoSelection
 from app.models.user import User
 from app.models.video_upload import VideoUpload
 from app.models.video_delivery import VideoDelivery
@@ -153,6 +153,17 @@ async def import_repository_upload(
         chat_session.status_preview = "参考视频已从仓库选中"
         if chat_session.title in {"新会话", "默认会话"}:
             chat_session.title = (upload.filename or source_upload.filename or "参考视频")[:24]
+        await session.execute(
+            delete(AutoSessionReferenceVideoSelection)
+            .where(AutoSessionReferenceVideoSelection.session_id == chat_session.id)
+        )
+        session.add(
+            AutoSessionReferenceVideoSelection(
+                session_id=chat_session.id,
+                video_upload_id=upload.id,
+                sort_order=0,
+            )
+        )
         await session.commit()
     else:
         await session.commit()
@@ -186,6 +197,10 @@ async def delete_user_upload(
         update(AutoChatSession)
         .where(AutoChatSession.reference_video_id == upload.id)
         .values(reference_video_id=None)
+    )
+    await session.execute(
+        delete(AutoSessionReferenceVideoSelection)
+        .where(AutoSessionReferenceVideoSelection.video_upload_id == upload.id)
     )
 
     if upload.file_path and os.path.exists(upload.file_path):
@@ -343,6 +358,17 @@ async def import_repository_delivery(
         chat_session.status_preview = "参考视频已从仓库选中"
         if chat_session.title in {"新会话", "默认会话"}:
             chat_session.title = (delivery.title or upload.filename or "参考视频")[:24]
+        await session.execute(
+            delete(AutoSessionReferenceVideoSelection)
+            .where(AutoSessionReferenceVideoSelection.session_id == chat_session.id)
+        )
+        session.add(
+            AutoSessionReferenceVideoSelection(
+                session_id=chat_session.id,
+                video_upload_id=upload.id,
+                sort_order=0,
+            )
+        )
 
     await session.commit()
     await session.refresh(upload)

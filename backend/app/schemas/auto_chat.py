@@ -49,7 +49,6 @@ class AutoChatMessageCreateRequest(BaseModel):
     title: Optional[str] = None
     content: str
     payload: Optional[AutoChatMessagePayload] = None
-    force_tool: Optional[str] = None
     generation_model: Optional[str] = None
     skip_video_generation: Optional[bool] = None
     video_model_no_audio: Optional[bool] = None
@@ -80,6 +79,7 @@ class AutoChatSessionState(BaseModel):
     draft_script: Optional[str] = None
     background_template_id: Optional[str] = None
     reference_video_id: Optional[str] = None
+    reference_video_ids: list[str] = []
     video_platform: str = "generic"
     video_no_audio: bool = True
     video_model_no_audio: bool = True
@@ -97,6 +97,7 @@ class AutoChatSessionUpdateRequest(BaseModel):
     draft_script: Optional[str] = None
     background_template_id: Optional[str] = None
     reference_video_id: Optional[str] = None
+    reference_video_ids: Optional[list[str]] = None
     video_platform: Optional[str] = None
     video_no_audio: Optional[bool] = None
     video_model_no_audio: Optional[bool] = None
@@ -131,6 +132,7 @@ class AutoChatSessionDetailResponse(BaseModel):
     selected_materials: list[MaterialSelectionResponse] = []
     selected_material_items: list[MaterialResponse] = []
     reference_video: Optional[VideoUploadResponse] = None
+    reference_videos: list[VideoUploadResponse] = []
     current_run: Optional[PipelineRunResponse] = None
     agent_executions: list[AgentExecutionResponse] = []
     delivery_info: Optional[PipelineDeliveryResponse] = None

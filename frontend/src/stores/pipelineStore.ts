@@ -6,6 +6,7 @@ export const pipelineStore = reactive({
   currentRun: null as PipelineRun | null,
   agentExecutions: [] as AgentExecution[],
   usageSummary: null as PipelineUsageSummary | null,
+  remixVideoIds: [] as string[],
 })
 
 export function setAutoMode(isAutoMode: boolean) {
@@ -24,8 +25,13 @@ export function setUsageSummary(usageSummary: PipelineUsageSummary | null) {
   pipelineStore.usageSummary = usageSummary
 }
 
+export function setRemixVideoIds(videoIds: string[]) {
+  pipelineStore.remixVideoIds = videoIds
+}
+
 export function resetPipeline() {
   pipelineStore.currentRun = null
   pipelineStore.agentExecutions = []
   pipelineStore.usageSummary = null
+  pipelineStore.remixVideoIds = []
 }

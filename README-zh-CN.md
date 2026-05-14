@@ -4,18 +4,18 @@
 
 [文档导航](./docs/README-zh-CN.md)
 
-capy 是一个面向短视频生产的 AI 工作台，目前提供两种工作流：
+capy 是一个面向短视频生产的 AI 工作台，目前提供两种主要工作流：
 
 - `一键生成`：通过对话式界面，直接用脚本和图片素材生成视频
 - `手动模式`：按上传、分析、选素材、写提示词、生成、剪辑的步骤逐步完成
 
-当前项目采用 Vue + Vite 前端和 FastAPI 后端。后端通过多 agent 流水线完成规划、复刻方案拆解、提示词设计、音频字幕生成、分镜视频生成、最终剪辑和质量审核；同时已经补齐 MCP Server、基于 Qdrant 的历史方案检索增强、Analytics API、结构化日志以及 Docker / CI 基础工程化。
+当前项目采用 Vue + Vite 前端和 FastAPI 后端。后端通过多 agent 流水线完成规划、复刻方案拆解、多视频混剪规划、提示词设计、音频字幕生成、分镜视频生成、最终剪辑和质量审核；同时已经补齐 MCP Server、基于 Qdrant 的历史方案检索增强、Analytics API、结构化日志以及 Docker / CI 基础工程化。
 
 ## 给项目经理的快速导览
 
 vidgen 不是单点的视频模型调用 Demo，而是一套围绕“项目、素材、会话、Agent 流水线、资产仓库、发布交付”组织起来的短视频生产系统。用户可以登录后创建项目，在自动模式里选择图片素材或参考视频，用自然语言提出创作要求，系统会把请求拆解为镜头方案、视频提示词、配音字幕、分镜视频片段和最终成片，并把关键中间产物沉淀到个人仓库，便于复看、复用和验收。
 
-当前产品最完整的主链路是“自动模式一键生成”：素材选择和会话状态由前端持久化，ChatAgent 负责判断用户是在普通对话、视频分析、参考视频复刻还是正式生成，PipelineExecutor / LangGraphPipelineExecutor 再调度各阶段 Agent。默认编排引擎是 `langgraph`，默认视频模型选择是 `Seedance 1.5 Pro`，PromptEngineer 完成镜头方案后默认会暂停在 `waiting_prompt_review`，用户确认后才继续进入音频、视频、剪辑和 QA。
+当前产品最完整的主链路是“自动模式一键生成”：素材选择和会话状态由前端持久化，`OrchestratorAgent.chat_stream(...)` 负责判断用户是在普通对话、视频分析、参考视频复刻、多视频混剪还是正式生成，PipelineExecutor / LangGraphPipelineExecutor 再调度各阶段 Agent。默认编排引擎是 `langgraph`，默认视频模型选择是 `Seedance 1.5 Pro`，PromptEngineer 完成镜头方案后默认会暂停在 `waiting_prompt_review`，用户确认后才继续进入音频、视频、剪辑和 QA。后端 API 也已支持 `reference_video_ids` 多视频混剪路径，确认后按需先生成旁白并按真实音频时长调整时间线，再抽取源视频片段拼接，不调用图生视频模型。
 
 面向管理和验收，系统已经具备本地账号隔离、项目历史、模型用量统计、Agent 进度追踪、中间产物仓库、成片仓库、抖音授权发布草稿、管理员用户管理和外部 API Key 调用。最近还新增了 MCP Server（用于把内部能力开放给外部 Agent 客户端）、Analytics API（用于看各 Agent 成功率、耗时和 Token 消耗）以及结构化日志链路。面向工程扩展，系统将外部模型、媒体处理、Agent 状态、运行时 skill、语义记忆、观测指标和交付发布拆成独立模块，后续替换模型或增加平台时不需要重写整条业务流。
 
@@ -26,11 +26,12 @@ vidgen 不是单点的视频模型调用 Demo，而是一套围绕“项目、�
 - 仪表盘新增独立 `API Keys` 页签：普通用户可自助创建、查看、停用外部调用凭证；管理员可按客户账号单独创建和管理 API Key
 - 对话式一键生成界面，可在同一页面上传素材、选图、输入脚本并触发生成
 - 提示词对话接口与自动模式中的普通 assistant 对话，在真实 Qwen 模式下都支持服务端流式返回，前端可逐段展示生成中的文本；自动模式还会在 skill 路由、参数提取和模型调用前输出灰字状态，便于确认请求是否已进入模型链路
-- 自动模式 assistant 现在按 Claude 风格的目录式 runtime skills 工作：启动时只读取 `SKILL.md` frontmatter，命中后再按需加载 `SKILL.md` 正文、`schema.json` 和 `runtime.py`，避免每次都把全部 tool 定义发给模型
+- 自动模式 assistant 现在由 Orchestrator 按 Claude 风格的目录式 runtime skills 工作：启动时只读取 `SKILL.md` frontmatter，命中后再按需加载 `SKILL.md` 正文、`schema.json` 和 `runtime.py`，避免每次都把全部 tool 定义发给模型
 - 自动模式的 `generate_video` skill 只对“开始生成 / 输出视频 / 启动流水线”等明确生产意图触发；“生成营销视频设计方案”这类策划请求会留在普通对话里
 - 普通视频生成链路中，`OrchestratorAgent` 是调度核心：它按状态机解析用户消息和图片，判断视频类型、平台、风格、目标时长，并把图片内容与图片路径传给后续内部节点；前端通过 pipeline SSE 展示这些状态迁移
 - PromptEngineer 会产出镜头级导演方案并写入聊天消息；默认开启人工确认闸门，用户确认镜头方案后才继续生成视频
 - 自动模式支持上传参考视频进入复刻模式，并在执行前确认复刻方案
+- Pipeline API 支持多视频混剪：自动模式可在个人仓库中多选参考视频，`reference_video_ids` 传入 2 个及以上视频时会进入 `remix_planner -> waiting_remix_confirmation -> audio_subtitle -> remix_assembler`；确认接口为 `/api/projects/{project_id}/pipeline/{run_id}/confirm-remix`。当混剪启用旁白时，确认后先生成 / 复用 TTS 音频，再把 `remix_plan` 时间线对齐真实音频时长；如当前素材覆盖不了旁白长度，会自动重跑 `remix_planner` 并回到 `waiting_remix_confirmation` 让用户再次确认。会话中选中的音频素材会作为 `remix_config.bgm_material_id` 优先用于混剪 BGM，默认去掉源视频声音，只有显式 `include_source_audio=true` 时才混入弱原声
 - 个人中心角色背景模板库，支持预设角色模板、关键词自动生成人设草稿和任务后增量学习
 - 手动模式，适合希望逐步控制每个环节的创作者
 - 当前 Vue 自动模式界面默认视频生成模型为 `Seedance 1.5 Pro`，可在 `Seedance 1.5 Pro` / `Seedance 2.0` / `Kling v3` / `mock` 间选择
@@ -42,6 +43,8 @@ vidgen 不是单点的视频模型调用 Demo，而是一套围绕“项目、�
 - 多 agent 流水线：
   - `orchestrator`
   - `replication_planner`
+  - `remix_planner`
+  - `remix_assembler`
   - `prompt_engineer`
   - `audio_subtitle`
   - `video_generator`
@@ -64,6 +67,8 @@ vidgen 不是单点的视频模型调用 Demo，而是一套围绕“项目、�
   后端已支持根据脚本文本直接生成配音与字幕时间轴；`voiceover_no_audio` 控制是否跳过 VidGen TTS/字幕，`video_model_no_audio` 单独控制 Seedance/Kling 模型原声，自动模式默认关闭模型原声。
 - 多个短视频自动拼接并适配平台尺寸：
   系统可对多个短视频片段进行重排、裁剪、拼接、字幕合成，并输出抖音、小红书、B 站等目标平台尺寸。
+- 多视频混剪：
+  当前支持从个人仓库多选 2 个及以上上传视频作为源素材，并按自动模式会话持久化；如果会话中同时选择了音频素材，自动模式会将第一个音频素材作为 `bgm_material_id` 传入混剪配置。后端先做 FFmpeg 镜头预分析、BGM 来源解析和关键帧语义规划，再由用户确认 `remix_plan`；当 `remix_config.add_voiceover=true` 时，`remix_plan.segments[]` 会包含可直接配音的 `voiceover` 旁白文本，前端混剪确认卡会展示这些旁白。确认后执行器先复用 `AudioSubtitleAgent` 基于显式 `voiceover_script` 或方案片段旁白 / 描述和 `audio_design` 生成旁白 / 字幕，探测真实音频时长，再压缩、延长或移除尾段来对齐 `remix_plan` 时间线；若旁白长到当前片段无法覆盖，会自动重跑 `RemixPlannerAgent` 并再次回到 `waiting_remix_confirmation`。`RemixAssemblerAgent` 从源视频抽取时间段、拼接并合成最终视频，字幕烧录复用普通剪辑链路的透明 PNG overlay，不依赖 FFmpeg `subtitles` filter。上传或生成 BGM 存在时，后端会把 LLM 返回的 `source_audio` / `silent` 覆盖为 `bgm_only`；只有显式 `include_source_audio=true` 时才使用 `mix` 并降低原声音量。该路径不产生新的 AI 视频片段，因此不会调用 `VideoGeneratorAgent`。当前未接入独立音乐生成服务，未上传 BGM 时按内置 `bgm_mood` 曲库或静音降级。
 - 流程可视化与中间产物入仓：
   前端支持展示 agent 进度、token 消耗以及中间结果，并允许用户取消当前流程；提示词方案、shot 级提示词、配音参数、音频、字幕和分镜视频会自动保存为 `RepositoryAsset`，可在右侧栏或个人仓库继续查看。
 - 人工确认镜头方案：
@@ -129,17 +134,19 @@ vidgen 不是单点的视频模型调用 Demo，而是一套围绕“项目、�
    作为 Intake / Context Agent，负责把用户自由输入解析成平台、时长、风格、BGM、旁白脚本或创作目标等结构化参数，并整理图片内容、视觉角色和营销上下文。
 2. `ReplicationPlannerAgent`
    当输入包含参考视频时优先执行，生成复刻方案并进入确认链路。
-3. `PromptEngineerAgent`
+3. `RemixPlannerAgent` / `RemixAssemblerAgent`
+   当输入包含 2 个及以上 `reference_video_ids` 时优先执行混剪规划；确认后若启用旁白，会先生成 / 复用 TTS 音频并按真实音频时长调整时间线，必要时重跑规划并再次等待确认，最终再抽取源视频片段并拼接成片。
+4. `PromptEngineerAgent`
    作为导演 Agent，根据 `orchestrator_plan` 中的导演输入上下文生成最终镜头方案、每个镜头的提示词、旁白片段和语音参数。
-4. Prompt Review
+5. Prompt Review
    默认暂停等待用户确认镜头方案，确认后继续。
-5. `AudioSubtitleAgent`
+6. `AudioSubtitleAgent`
    生成配音音频和字幕时间轴。
-6. `VideoGeneratorAgent`
+7. `VideoGeneratorAgent`
    根据导演 Agent 产出的图片路径和提示词逐镜头生成视频片段。
-7. `VideoEditorAgent`
+8. `VideoEditorAgent`
    按顺序重排、裁剪并拼接视频片段，同时合入音频和字幕。
-8. `QAReviewerAgent`
+9. `QAReviewerAgent`
    检查缺失片段、时长偏差、音视频同步和整体质量，并在配置允许时触发有限重试。
 
 核心编排文件：
@@ -413,7 +420,7 @@ USE_MOCK_LIPSYNC=true
 
 上面这组配置更适合“本地先跑通界面和流程”的开发模式；如果要接入真实模型，把对应 `USE_MOCK_*` 改成 `false`，并补齐相应 provider key。
 如果没有配置对应 key，部分服务会根据当前设置自动退回到 mock 实现。
-上传入口会按文件类型做扩展名、声明 MIME、文件头和大小校验；参考视频默认上限由 `MAX_UPLOAD_SIZE_MB` 控制，图片由 `MAX_IMAGE_SIZE_MB` 控制，Talking Head 音频由 `MAX_AUDIO_SIZE_MB` 控制，时间线资产由 `MAX_TIMELINE_ASSET_SIZE_MB` 控制。
+上传入口会按文件类型做扩展名、声明 MIME、文件头和大小校验；参考视频默认上限由 `MAX_UPLOAD_SIZE_MB` 控制，素材图片由 `MAX_IMAGE_SIZE_MB` 控制，素材音频和 Talking Head 音频由 `MAX_AUDIO_SIZE_MB` 控制，时间线资产由 `MAX_TIMELINE_ASSET_SIZE_MB` 控制。
 
 如果要启用“连接抖音账号并发布”，需要在 `.env` 中额外配置：
 
@@ -435,10 +442,11 @@ USE_MOCK_LIPSYNC=true
 - 创建或打开一个项目
 - 保持在自动模式对话工作台
 - 可选：在个人中心选择一个预设角色，或输入关键词让 AI 自动生成角色背景草稿后保存
-- 上传素材文件夹或单张图片
+- 上传素材文件夹、单张图片或音频素材
 - 可选：上传参考视频进入复刻模式
 - 在左侧会话栏中切换历史会话，或新开一个会话继续创作
-- 选择图片素材，或从仓库选择已有图片 / 视频作为当前会话素材
+- 选择图片 / 音频素材，或从仓库选择已有图片 / 音频 / 一个或多个参考视频作为当前会话素材
+- 已选图片素材、音频素材和参考视频会显示在聊天窗口上方，可在发送下一条消息或启动 pipeline 前单个移除；多视频混剪时第一个音频素材会优先作为 BGM
 - 输入创作要求或明确的旁白脚本并发送
 - 如果是复刻模式，先确认或调整系统给出的复刻方案
 - 系统先生成镜头级导演方案和视频提示词；默认需要确认镜头方案后才继续生成短视频片段和最终合成视频
@@ -490,11 +498,11 @@ cd frontend && npm run build
 - 当前默认的视频生成路径使用 `Seedance 1.5 Pro`；自动模式的“模型”下拉项可切换 `Seedance 2.0` 或 `Kling`，对应服务仍需在 `.env` 中配置 `ARK_API_KEY` 或 WaveSpeed/Kling API key。
 - 自动模式的时长、模型原声、系统配音、转场、BGM 和视频生成行为不再暴露为顶部按钮，统一由 `frontend/src/components/pipeline/AutoModeStudio.vue` 中的 `AUTO_PIPELINE_CODE_SWITCHES` 控制；默认关闭模型原声并开启 VidGen 系统配音。
 - 自动模式生成 skill 使用 `user_request` 表达创作目标，`narration_script/script` 只用于用户明确提供的最终口播文案。
-- 当前自动模式优先服务视频生成任务：当会话已选素材且用户明确要求生成 / 制作 / 输出视频时，ChatAgent 会直接启动 `generate_video`，并把原始用户消息作为 `user_request` 进入 pipeline；随后由 `OrchestratorAgent` 内部做需求理解和素材上下文整理。
+- 当前自动模式优先服务视频生成任务：当会话已选素材且用户明确要求生成 / 制作 / 输出视频时，Orchestrator 会直接启动 `generate_video`，并把原始用户消息作为 `user_request` 进入 pipeline；多参考视频且明确混剪 / 生成成片时会启动 `remix_video`。随后由 pipeline 中的 `OrchestratorAgent` 阶段做需求理解和素材上下文整理。
 - `HUMAN_IN_LOOP_PROMPT_REVIEW=true` 时，普通生成默认会先停在镜头方案确认；如果只想直接生成，可在请求里显式传 `review_prompts=false` 或关闭全局配置。
 - `MEM0_ENABLED=true` 还需要 `QWEN_API_KEY` 和 `mem0ai` 依赖可用；初始化失败时系统会记录 warning 并退回无语义记忆模式。
 - 自动模式当前流程失败后，可在聊天框输入 `continue` / `retry` / `继续`，前端会调用失败 Agent 重试接口，从最近失败阶段继续执行；如果分镜视频已经生成，会复用已生成片段并继续补音频、剪辑和 QA。
-- 自动模式对话中的“中止对话”只中断当前 chat/SSE 与尚未完成的 tool 调用；已经创建的 `PipelineRun` 会继续在右侧执行状态中通过 pipeline SSE 更新，需要停止时再点“取消流程”。
+- 自动模式对话中的“中止对话”只中断当前 chat/SSE 与尚未完成的 skill 调用；已经创建的 `PipelineRun` 会继续在右侧执行状态中通过 pipeline SSE 更新，需要停止时再点“取消流程”。
 - 个人中心当前采用更偏 `capybara` 风格的角色工作台：其他预设角色以图标卡展示，右侧只展示当前选中角色的背景信息用于确认。
 - 角色关键词自动生成功能依赖后端 LLM；如果未配置真实模型，会回退到基于内置预设模板的本地生成逻辑。
 - 抖音发布目前是“已连接抖音账号后，由 assistant 自动生成发布草稿，用户确认后提交”，不是静默自动发布。

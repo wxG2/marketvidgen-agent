@@ -4,8 +4,8 @@
 
 - 阶段 Agent：负责单一生产步骤
 - 执行器：负责把多个阶段串成完整流程
-- 对话 Agent：负责自动模式里的会话式交互
-- Tool / Skill：负责让对话 Agent 能安全调用视频能力
+- Orchestrator 会话入口：负责自动模式里的会话式交互与能力路由
+- Tool / Skill：负责让 Orchestrator 能安全、按需调用视频能力
 - Core 基础设施：负责上下文、状态、权限和通用抽象
 
 ## 当前目录结构
@@ -21,10 +21,8 @@
 - `executors/langgraph/`
   LangGraph 细分实现目录：
   `state.py` 管状态 schema，`nodes.py` 管节点逻辑，`executor.py` 管图装配与生命周期。
-- `chat/`
-  对话式 Agent 子系统。当前核心是 `ChatAgent`，服务自动模式 `auto_sessions` 的 assistant 交互。
 - `skills/`
-  暴露给 `ChatAgent` 的工具技能定义。当前主要是 `analyze_video`、`replicate_video`、`generate_video` 三类视频能力包装。
+  暴露给 `OrchestratorAgent.chat_stream(...)` 的工具技能定义。当前主要是 `analyze_video`、`generate_video`、`remix_video`、`replicate_video` 四类视频能力包装。
   这些 runtime skills 现在采用 `SKILL.md + schema.json + runtime.py` 的目录式结构，并会在启动时自动发现、以 lazy loader 方式注册到 `ToolRegistry`，不再需要在 `main.py` 里逐个硬编码挂载。
   这个目录的 Python runtime skill 约定见 `skills/README.md`；它和 `.claude/.codex` 下的 `SKILL.md` 目录式技能不是同一层抽象。
 
@@ -32,8 +30,8 @@
 
 一条典型自动生成链路大致是这样分工的：
 
-1. `chat/` 判断用户是在继续聊天，还是要触发视频动作
-2. `skills/` 把可暴露给聊天 Agent 的能力包装成工具定义
+1. `OrchestratorAgent.chat_stream(...)` 判断用户是在继续聊天，还是要触发视频动作
+2. `skills/` 把可暴露给 Orchestrator 的能力包装成工具定义
 3. `executors/` 决定整条 pipeline 如何运行、暂停、恢复、重试
 4. `stages/` 真正执行每一阶段的业务逻辑
 5. `core/` 为以上所有部分提供统一上下文、状态记录和工具调用基础设施
@@ -53,7 +51,6 @@
 - `backend/app/agents/video_editor.py`
 - `backend/app/agents/qa_reviewer.py`
 - `backend/app/agents/tool_registry.py`
-- `backend/app/agents/chat_agent.py`
 
 这些文件现在主要承担兼容导出（shim）职责，避免旧导入路径立即失效。新代码应优先直接从子包导入，而不是继续依赖这些顶层平铺模块。
 
@@ -62,24 +59,23 @@
 - `from app.agents.core import ToolRegistry`
 - `from app.agents.stages import OrchestratorAgent`
 - `from app.agents.executors import LangGraphPipelineExecutor`
-- `from app.agents.chat import ChatAgent`
 
 ## 什么时候把代码放进哪个子目录
 
 - 新增跨 Agent 共用抽象、上下文或注册机制：放 `core/`
 - 新增视频生产中的单一阶段节点：放 `stages/`
 - 新增一套运行时编排方式或恢复机制：放 `executors/`
-- 新增自动模式对话能力：放 `chat/`
-- 新增供聊天 Agent 调用的工具包装：放 `skills/`
+- 新增自动模式对话能力：优先扩展 Orchestrator 会话入口或 `skills/`
+- 新增供 Orchestrator 调用的工具包装：放 `skills/`
 
 一个简单判断标准是：
 
 - 如果代码关注“某一步怎么做”，通常属于 `stages/`
 - 如果代码关注“多步怎么串起来”，通常属于 `executors/`
-- 如果代码关注“聊天时该调什么工具”，通常属于 `chat/` 或 `skills/`
+- 如果代码关注“聊天时该调什么能力”，通常属于 Orchestrator 会话入口或 `skills/`
 
 ## 对话式链路补充说明
 
-- `chat/README.md` 记录了 `ChatAgent` 当前的流式策略，包括“普通对话真流式、工具调用保留事件流”的实现边界与异常兜底逻辑
+- `orchestrator_chat.py` 记录了 Orchestrator 当前的流式策略，包括“普通对话真流式、skill 调用保留事件流”的实现边界与异常兜底逻辑
 - `skills/README.md` 记录了后端 runtime skill 的设计约定，包括为什么这里保留 `snake_case` 工具名，以及如何用 `RuntimeSkillSpec` 统一描述技能元数据
 - `VIDEO_GENERATION_FLOW.md` 记录了当前视频生成链路，从用户消息到 `input_config`，再到各阶段 Agent 的输入输出和 artifact 交接关系

@@ -8,6 +8,7 @@
 
 - `backend/app/agents/skills/analyze-video/`
 - `backend/app/agents/skills/generate-video/`
+- `backend/app/agents/skills/remix-video/`
 - `backend/app/agents/skills/replicate-video/`
 
 每个 skill 目录的约定文件是：
@@ -21,7 +22,7 @@
 4. `reference.md`
    可选补充资料。只有在选中该 skill 后才按需读取。
 
-顶层保留的 `analyze_video.py / generate_video.py / replicate_video.py` 现在只是兼容 shim，避免旧导入路径立即失效；真实实现已经迁到目录式 skill 包中。
+顶层保留的 `analyze_video.py / generate_video.py / remix_video.py / replicate_video.py` 现在只是兼容 shim，避免旧导入路径立即失效；真实实现已经迁到目录式 skill 包中。
 
 ## Progressive Disclosure
 
@@ -36,7 +37,7 @@
    - `required-permission`
    - 其他路由所需 metadata
 2. 命中某个 skill 后
-   `ChatAgent` 再读取该 skill 的 `SKILL.md` 正文，把正文说明提供给参数提取器。
+   Orchestrator 会话入口再读取该 skill 的 `SKILL.md` 正文，把正文说明提供给参数提取器或 action adapter。
 3. 真正执行或 fallback 需要 schema 时
    才继续懒加载：
    - `schema.json`
@@ -52,7 +53,7 @@
 - 扫描 `backend/app/agents/skills/*/SKILL.md`
 - 只根据 frontmatter 构造 metadata-only manifest
 - 注册到 `ToolRegistry` 时使用 lazy loader
-- 如果 `required-permission` 有值，也会自动授予 `chat_agent`
+- 如果 `required-permission` 有值，也会自动授予 `orchestrator`
 
 这意味着新增 skill 的最小步骤变成：
 
@@ -64,14 +65,13 @@
 
 不需要再改 `main.py` 手工注册。
 
-## ChatAgent 如何使用
+## Orchestrator 如何使用
 
-`ChatAgent` 对 runtime skill 的调用链路现在是：
+`OrchestratorAgent.chat_stream(...)` 对 runtime skill 的调用链路现在是：
 
 - 先读已注册 skill 的 metadata-only manifest
 - 按 `required_inputs` 过滤当前会话不可用的 skill
 - 用 `routing_hints` 做轻量候选筛选
-- 候选冲突时，只把候选 skill 摘要交给 LLM 做一次轻量路由
 - 选中后再加载该 skill 的 `SKILL.md` 正文、`schema.json` 和 `runtime.py`
 - 参数提取时按需附带 `reference.md`
 - 然后直接执行该 skill
@@ -83,10 +83,12 @@
 - skill 目录名和 `SKILL.md` 里的 `name` 使用连字符：
   - `analyze-video`
   - `generate-video`
+  - `remix-video`
   - `replicate-video`
 - 真实 runtime tool name 仍保持 `snake_case`，通过 frontmatter 里的 `tool-name` 指定：
   - `analyze_video`
   - `generate_video`
+  - `remix_video`
   - `replicate_video`
 
 这样既对齐 Claude 官方的 skill 命名风格，也保留现有 function-calling tool 名的稳定性。

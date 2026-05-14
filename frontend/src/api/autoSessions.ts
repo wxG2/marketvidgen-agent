@@ -27,6 +27,7 @@ export const updateAutoSession = (
     draft_script: string | null
     background_template_id: string | null
     reference_video_id: string | null
+    reference_video_ids: string[]
     video_platform: string
     video_no_audio: boolean
     video_model_no_audio: boolean
@@ -96,7 +97,6 @@ export const chatWithAgent = (
     title?: string
     content: string
     payload?: AutoChatMessagePayload
-    force_tool?: string
     generation_model?: string
     skip_video_generation?: boolean
     video_model_no_audio?: boolean

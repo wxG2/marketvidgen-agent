@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { getMe, logout } from './api/auth'
-import { createProject, listProjects, updateProject } from './api/projects'
+import { createProject, getProject, listProjects, updateProject } from './api/projects'
 import { getUpload } from './api/upload'
 import { getAnalysis } from './api/analysis'
 import { scanMaterials } from './api/materials'
@@ -35,7 +35,7 @@ import UsageDashboardPage from './components/dashboard/UsageDashboardPage.vue'
 type AutoModeStudioExpose = {
   handleRepositoryPicked: (
     items: MaterialItem[],
-    upload: RepositoryUpload | null,
+    uploads: RepositoryUpload[],
     delivery: RepositoryDelivery | null,
   ) => Promise<void>
 }
@@ -48,6 +48,7 @@ const projectName = ref('')
 const showDashboard = ref(false)
 const showRepository = ref(false)
 const repositoryPickerMode = ref(false)
+const openingRepository = ref(false)
 const upload = ref<VideoUpload | null>(null)
 const analysis = ref<VideoAnalysis | null>(null)
 const maxStep = ref(1)
@@ -134,7 +135,37 @@ async function handleLogout() {
   repositoryPickerMode.value = false
 }
 
-function openRepository(pickerMode = false) {
+async function ensureCurrentProject() {
+  const current = project.value
+  if (!current?.id) return false
+
+  try {
+    const freshProject = await getProject(current.id)
+    setProject(freshProject)
+    return true
+  } catch {
+    const freshProjects = await listProjects().catch(() => [])
+    projects.value = freshProjects
+    const fallbackProject = freshProjects[0] || null
+    if (fallbackProject) {
+      selectProject(fallbackProject)
+      toast('warning', '当前项目不存在，已切换到最近项目')
+      return true
+    }
+    setProject(null)
+    toast('warning', '当前项目不存在，请先创建新项目')
+    return false
+  }
+}
+
+async function openRepository(pickerMode = false) {
+  if (openingRepository.value) return
+  openingRepository.value = true
+  const canOpen = await ensureCurrentProject().finally(() => {
+    openingRepository.value = false
+  })
+  if (!canOpen) return
+
   repositoryPickerMode.value = pickerMode
   showRepository.value = true
   showDashboard.value = false
@@ -142,12 +173,16 @@ function openRepository(pickerMode = false) {
 
 async function handleRepositoryConfirm(
   items: MaterialItem[],
-  selectedUpload: RepositoryUpload | null,
+  selectedUploads: RepositoryUpload[],
   selectedDelivery: RepositoryDelivery | null,
 ) {
-  await autoModeStudio.value?.handleRepositoryPicked(items, selectedUpload, selectedDelivery)
-  showRepository.value = false
-  repositoryPickerMode.value = false
+  try {
+    await autoModeStudio.value?.handleRepositoryPicked(items, selectedUploads, selectedDelivery)
+    showRepository.value = false
+    repositoryPickerMode.value = false
+  } catch {
+    // Keep picker open when applying repository selection fails.
+  }
 }
 
 function backFromRepository() {
@@ -262,6 +297,7 @@ watch(project, loadProjectData)
       <div class="min-h-0 flex-1 overflow-hidden">
         <RepositoryPage
           v-if="showRepository"
+          :project-id="project.id"
           :picker-mode="repositoryPickerMode"
           @back="backFromRepository"
           @picker-confirm="handleRepositoryConfirm"

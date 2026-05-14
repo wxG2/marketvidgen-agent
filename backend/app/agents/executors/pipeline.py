@@ -14,7 +14,8 @@ from app.agents.stages.orchestrator import OrchestratorAgent
 from app.agents.stages.prompt_engineer import PromptEngineerAgent
 from app.agents.stages.qa_reviewer import QAReviewerAgent
 from app.agents.stages.replication_planner import ReplicationPlannerAgent
-from app.agents.stages.requirement_parser import RequirementParserAgent
+from app.agents.stages.remix_assembler import RemixAssemblerAgent
+from app.agents.stages.remix_planner import RemixPlannerAgent
 from app.agents.stages.video_editor import VideoEditorAgent
 from app.agents.stages.video_generator import VideoGeneratorAgent
 from app.core.config import settings
@@ -51,11 +52,13 @@ class PipelineExecutor(PipelineExecutorSupportMixin):
         db_session_factory: async_sessionmaker,
         qa_reviewer: Optional[QAReviewerAgent] = None,
         replication_planner: Optional[ReplicationPlannerAgent] = None,
-        requirement_parser: Optional[RequirementParserAgent] = None,
+        remix_planner: Optional[RemixPlannerAgent] = None,
+        remix_assembler: Optional[RemixAssemblerAgent] = None,
     ):
-        self.requirement_parser = requirement_parser
         self.orchestrator = orchestrator
         self.replication_planner = replication_planner
+        self.remix_planner = remix_planner
+        self.remix_assembler = remix_assembler
         self.prompt_engineer = prompt_engineer
         self.audio_agent = audio_agent
         self.video_gen_agent = video_gen_agent
@@ -92,7 +95,7 @@ class PipelineExecutor(PipelineExecutorSupportMixin):
 
             result = await self._execute_pipeline(context, input_config)
 
-            if result.get("status") in ("waiting_confirmation", "waiting_prompt_review"):
+            if result.get("status") in ("waiting_confirmation", "waiting_prompt_review", "waiting_remix_confirmation"):
                 return result
 
             await self._maybe_learn_background_template(context, input_config)
@@ -116,6 +119,24 @@ class PipelineExecutor(PipelineExecutorSupportMixin):
         """Core pipeline logic with checkpoints, QA, and HITL support."""
 
         # ── Step 1: Route by intent ───────────────────────────────────────────
+        reference_video_ids = input_config.get("reference_video_ids") or []
+        if len(reference_video_ids) >= 2 and self.remix_planner is not None:
+            planner_result = await self.remix_planner.run(context, input_config)
+            if not planner_result.success:
+                raise RuntimeError(f"Remix Planner failed: {planner_result.error}")
+            context.artifacts["remix_plan"] = planner_result.output_data.get("remix_plan", {})
+            context.artifacts["remix_planner"] = planner_result.output_data
+            await context.save_checkpoint()
+
+            if planner_result.output_data.get("requires_confirmation"):
+                await self._update_run(
+                    context.pipeline_run_id,
+                    status="waiting_remix_confirmation",
+                    current_agent="remix_planner",
+                )
+                return {"status": "waiting_remix_confirmation"}
+            return await self.resume_from_remix_confirmation(context, input_config)
+
         if input_config.get("reference_video_id") and self.replication_planner is not None:
             # Replication path: plan first, then proceed to production after confirmation
             planner_result = await self.replication_planner.run(
@@ -310,6 +331,23 @@ class PipelineExecutor(PipelineExecutorSupportMixin):
 
         return await self._run_av_and_finish(context, input_config)
 
+    async def resume_from_remix_confirmation(self, context: AgentContext, input_config: dict) -> dict:
+        """Resume pipeline after user confirms the remix plan."""
+        if self.remix_assembler is None:
+            raise RuntimeError("Remix assembler is not configured")
+        waiting_result = await self.prepare_remix_after_audio(context, input_config)
+        if waiting_result:
+            return waiting_result
+        assembler_result = await self.remix_assembler.run(
+            context,
+            self.build_remix_assembler_input(context.artifacts, input_config),
+        )
+        if not assembler_result.success:
+            raise RuntimeError(f"Remix Assembler failed: {assembler_result.error}")
+        context.artifacts["final_video"] = assembler_result.output_data
+        await context.save_checkpoint()
+        return assembler_result.output_data
+
     # ── Agent map / input builder ─────────────────────────────────────────────
 
     async def run_named_agent(self, context: AgentContext, agent_name: str, input_config: dict) -> dict:
@@ -359,3 +397,13 @@ class PipelineExecutor(PipelineExecutorSupportMixin):
 
         if agent_name == "video_editor":
             await self.run_named_agent(context, "video_editor", input_config)
+            return
+
+        if agent_name == "remix_assembler":
+            await self.run_named_agent(context, "remix_assembler", input_config)
+            return
+
+        if agent_name == "qa_reviewer":
+            return
+
+        raise ValueError(f"Cannot continue from retry for agent: {agent_name}")
