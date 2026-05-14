@@ -117,6 +117,16 @@ class _FakeRemixDb:
             item.updated_at = item.created_at
             self.run = item
 
+    async def execute(self, _query):
+        class _EmptyResult:
+            def scalars(self):
+                return self
+
+            def first(self):
+                return None
+
+        return _EmptyResult()
+
     async def flush(self):
         return None
 

@@ -4,8 +4,11 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import select
+
 from app.core.config import settings
-from app.models.auto_chat import AutoChatSession
+from app.models.auto_chat import AutoChatSession, AutoSessionMaterialSelection
+from app.models.material import Material
 from app.models.pipeline import PipelineRun
 from app.models.video_upload import VideoUpload
 from app.routers.pipeline import launch_pipeline_task
@@ -63,9 +66,26 @@ def create_remix_video_skill(executor, db_factory, memory_service=None, mem0=Non
             legacy_no_audio = kwargs.get("no_audio", True)
             video_model_no_audio = kwargs.get("video_model_no_audio", legacy_no_audio)
             voiceover_no_audio = kwargs.get("voiceover_no_audio", legacy_no_audio)
+
+            # Resolve BGM material: prefer explicitly passed ID, then first audio in session
+            bgm_material_id = kwargs.get("bgm_material_id") or None
+            if not bgm_material_id:
+                result = await db.execute(
+                    select(Material.id)
+                    .join(AutoSessionMaterialSelection, AutoSessionMaterialSelection.material_id == Material.id)
+                    .where(
+                        AutoSessionMaterialSelection.session_id == session_id,
+                        Material.user_id == user_id,
+                        Material.media_type == "audio",
+                    )
+                    .order_by(AutoSessionMaterialSelection.sort_order.asc(), AutoSessionMaterialSelection.created_at.asc())
+                    .limit(1)
+                )
+                bgm_material_id = result.scalars().first() or None
+
             remix_config = {
                 "target_duration_seconds": kwargs.get("target_duration_seconds") or kwargs.get("duration_seconds", 30),
-                "bgm_material_id": kwargs.get("bgm_material_id"),
+                "bgm_material_id": bgm_material_id,
                 "bgm_mood": kwargs.get("bgm_mood", "none"),
                 "bgm_volume": kwargs.get("bgm_volume", 0.15),
                 "include_source_audio": not bool(video_model_no_audio),
