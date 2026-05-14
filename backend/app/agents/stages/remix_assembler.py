@@ -187,39 +187,40 @@ class RemixAssemblerAgent(BaseAgent):
         return None
 
     async def _concat_simple(self, clip_paths: list[str], output_path: str, *, include_audio: bool) -> None:
-        concat_file = os.path.join(os.path.dirname(output_path), "concat.txt")
-        Path(concat_file).write_text(
-            "\n".join(f"file '{Path(path).as_posix()}'" for path in clip_paths),
-            encoding="utf-8",
-        )
-        # Probe first clip to get target resolution; all clips are scaled to match so
-        # libx264 concat doesn't silently truncate when source videos have different sizes.
+        # Use filter_complex concat with per-input scale+fps normalization.
+        # The concat demuxer with a post-hoc vf scale is NOT sufficient: when clips
+        # have different resolutions or frame rates, FFmpeg triggers a filter graph
+        # reconfigure mid-stream and silently drops all frames from the second clip.
+        # The filter_complex approach scales and resamples each input individually
+        # before concatenation, so all combinations of resolution and fps work correctly.
         target_w, target_h = await self._probe_video_dimensions(clip_paths[0])
-        scale_filter = (
+        input_args: list[str] = []
+        for p in clip_paths:
+            input_args.extend(["-i", p])
+
+        scale = (
             f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
-            f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black"
+            f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black,fps=30,setsar=1"
         )
-        args = [
-            self.ffmpeg_bin,
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            concat_file,
-            "-vf",
-            scale_filter,
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-        ]
         if include_audio:
-            args.extend(["-c:a", "aac"])
+            filter_parts = [f"[{i}:v]{scale}[v{i}];[{i}:a]aresample=44100[a{i}]" for i in range(len(clip_paths))]
+            video_labels = "".join(f"[v{i}]" for i in range(len(clip_paths)))
+            audio_labels = "".join(f"[a{i}]" for i in range(len(clip_paths)))
+            n = len(clip_paths)
+            filter_parts.append(f"{video_labels}{audio_labels}concat=n={n}:v=1:a=1[vout][aout]")
+            filter_complex = ";".join(filter_parts)
+            map_args = ["-map", "[vout]", "-map", "[aout]", "-c:a", "aac"]
         else:
-            args.append("-an")
-        args.append(output_path)
+            filter_parts = [f"[{i}:v]{scale}[v{i}]" for i in range(len(clip_paths))]
+            video_labels = "".join(f"[v{i}]" for i in range(len(clip_paths)))
+            n = len(clip_paths)
+            filter_parts.append(f"{video_labels}concat=n={n}:v=1:a=0[vout]")
+            filter_complex = ";".join(filter_parts)
+            map_args = ["-map", "[vout]"]
+
+        args = [self.ffmpeg_bin, "-y"] + input_args + [
+            "-filter_complex", filter_complex,
+        ] + map_args + ["-c:v", "libx264", "-pix_fmt", "yuv420p", output_path]
         rc, _, stderr = await run_subprocess(*args)
         if rc != 0:
             raise RuntimeError(f"ffmpeg concat failed: {stderr}")
