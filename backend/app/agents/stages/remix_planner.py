@@ -527,7 +527,7 @@ class RemixPlannerAgent(BaseAgent):
             return None
 
         user_intent = str(input_data.get("script") or "").strip()
-        _TTS_CHARS_PER_SECOND = 4.5
+        _TTS_CHARS_PER_SECOND = 3.5
         payload = {
             "user_intent": user_intent,
             "segments": [

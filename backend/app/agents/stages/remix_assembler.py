@@ -415,7 +415,16 @@ class RemixAssemblerAgent(BaseAgent):
         for idx, (_, _, offset) in enumerate(per_segment_items):
             delay_ms = int(offset * 1000)
             label = f"[a{idx}]"
-            filter_parts.append(f"[{idx}:a]adelay={delay_ms}:all=1{label}")
+            # atrim limits voiceover to the segment's video duration so it never
+            # bleeds into the next segment; asetpts resets timestamps after trim.
+            seg = segments[idx] if idx < len(segments) else None
+            seg_dur = _segment_duration(seg) if seg else 0.0
+            if seg_dur > 0.05:
+                filter_parts.append(
+                    f"[{idx}:a]atrim=0:{seg_dur:.3f},asetpts=PTS-STARTPTS,adelay={delay_ms}:all=1{label}"
+                )
+            else:
+                filter_parts.append(f"[{idx}:a]adelay={delay_ms}:all=1{label}")
             mix_labels.append(label)
         n = len(per_segment_items)
         filter_parts.append(f"{''.join(mix_labels)}amix=inputs={n}:duration=longest:normalize=0[aout]")
@@ -445,32 +454,35 @@ class RemixAssemblerAgent(BaseAgent):
         audio_artifact: dict | None = None,
     ) -> str:
         audio_artifact = audio_artifact or {}
-        audio_path = str(audio_artifact.get("audio_path") or "").strip()
         subtitle_path = str(audio_artifact.get("subtitle_path") or "").strip()
         timed_segments: list[dict] = []
         per_seg_temp: str | None = None
         try:
-            if not audio_path:
-                if self.tts_service is None:
-                    raise RuntimeError("未配置 TTS 服务，无法生成混剪旁白")
+            # When segments carry individual voiceover texts, always use per-segment
+            # TTS regardless of any pre-generated audio_artifact. Pre-generated audio
+            # (from AudioSubtitleAgent) is a single concatenated script that is not
+            # aligned to segment boundaries and tends to be much longer than the video.
+            has_per_segment_voiceover = any(
+                str(seg.get("voiceover") or seg.get("script_segment") or seg.get("narration") or "").strip()
+                for seg in segments
+            )
 
-                voice_id = str(input_config.get("voice_id") or "default")
-                speed = float(input_config.get("voice_speed") or input_config.get("speed") or 1.0)
+            voice_id = str(input_config.get("voice_id") or "default")
+            speed = float(input_config.get("voice_speed") or input_config.get("speed") or 1.0)
 
-                has_per_segment_voiceover = any(
-                    str(seg.get("voiceover") or seg.get("script_segment") or seg.get("narration") or "").strip()
-                    for seg in segments
+            if has_per_segment_voiceover and self.tts_service is not None:
+                per_seg_temp = tempfile.mkdtemp(prefix="vidgen_remix_vo_")
+                audio_path, timed_segments = await self._build_per_segment_voiceover(
+                    segments, voice_id, speed, per_seg_temp
                 )
-
-                if has_per_segment_voiceover:
-                    per_seg_temp = tempfile.mkdtemp(prefix="vidgen_remix_vo_")
-                    audio_path, timed_segments = await self._build_per_segment_voiceover(
-                        segments, voice_id, speed, per_seg_temp
-                    )
-                    if not audio_path:
-                        shutil.copy2(input_path, output_path)
-                        return output_path
-                else:
+                if not audio_path:
+                    shutil.copy2(input_path, output_path)
+                    return output_path
+            else:
+                audio_path = str(audio_artifact.get("audio_path") or "").strip()
+                if not audio_path:
+                    if self.tts_service is None:
+                        raise RuntimeError("未配置 TTS 服务，无法生成混剪旁白")
                     script = str(input_config.get("voiceover_script") or "").strip()
                     if not script:
                         shutil.copy2(input_path, output_path)

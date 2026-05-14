@@ -15,7 +15,7 @@ from app.services.video_editing.helpers import _probe_duration
 logger = logging.getLogger(__name__)
 
 # Chinese character TTS speed: ~4.5 chars per second at speed=1.0
-_VOICEOVER_CHARS_PER_SECOND = 4.5
+_VOICEOVER_CHARS_PER_SECOND = 3.5
 _VOICEOVER_CAP_FACTOR = 1.2
 _VOICEOVER_CAP_MAX_EXTRA_SECONDS = 6.0
 
