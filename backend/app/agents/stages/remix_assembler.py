@@ -82,10 +82,11 @@ class RemixAssemblerAgent(BaseAgent):
         temp_dir = tempfile.mkdtemp(prefix="vidgen_remix_")
         os.makedirs(self.output_dir, exist_ok=True)
         try:
-            # Determine a common target resolution/fps by probing all unique source paths.
-            # Normalizing at extraction time ensures the concat demuxer receives uniform clips.
+            # Determine target resolution from platform setting (e.g. douyin=720×1280),
+            # falling back to majority vote across source videos if platform is unknown.
+            platform = str(input_config.get("platform") or "generic").lower()
             target_w, target_h = await self._resolve_target_dimensions(
-                list(source_paths.values())
+                list(source_paths.values()), platform=platform
             )
             target_fps = 30
 
@@ -179,8 +180,21 @@ class RemixAssemblerAgent(BaseAgent):
             target_fps=target_fps,
         )
 
-    async def _resolve_target_dimensions(self, source_paths: list[str]) -> tuple[int, int]:
-        """Probe all unique source video dimensions and pick the most common W×H."""
+    async def _resolve_target_dimensions(
+        self, source_paths: list[str], *, platform: str = "generic"
+    ) -> tuple[int, int]:
+        """Return the target W×H for clip extraction.
+
+        Priority:
+        1. Platform setting from settings.PLATFORM_RESOLUTIONS (e.g. douyin=720×1280)
+        2. Majority-vote across source video dimensions
+        3. Default 1080×1920
+        """
+        from app.core.config import settings
+        platform_res = settings.PLATFORM_RESOLUTIONS.get(platform)
+        if platform_res:
+            return platform_res
+
         from collections import Counter
         dims: list[tuple[int, int]] = []
         for path in source_paths:
@@ -522,9 +536,12 @@ class RemixAssemblerAgent(BaseAgent):
                     for png_path in sub_inputs:
                         args.extend(["-i", png_path])
                     if has_existing_audio:
+                        # BGM was applied at a low volume in _apply_audio_design (e.g. 0.25).
+                        # Boost it 2.5× here so it's audible as background under the voiceover.
                         filter_complex = (
                             f"{overlay_filter};"
-                            "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]"
+                            "[0:a]volume=2.5[bgm_up];"
+                            "[bgm_up][1:a]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]"
                         )
                         args.extend([
                             "-filter_complex",
@@ -570,7 +587,7 @@ class RemixAssemblerAgent(BaseAgent):
                     "-i",
                     audio_path,
                     "-filter_complex",
-                    "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]",
+                    "[0:a]volume=2.5[bgm_up];[bgm_up][1:a]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]",
                     "-map",
                     "0:v:0",
                     "-map",
