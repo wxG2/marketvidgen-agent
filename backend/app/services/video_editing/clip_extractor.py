@@ -38,14 +38,11 @@ class ClipExtractorService:
             "0:v:0",
         ]
         if include_audio:
-            fade_start = max(duration - 0.15, 0)
             args.extend([
                 "-map",
                 "0:a?",
                 "-c:a",
                 "aac",
-                "-af",
-                f"afade=t=in:d=0.15,afade=t=out:st={fade_start:.3f}:d=0.15",
             ])
         else:
             args.append("-an")

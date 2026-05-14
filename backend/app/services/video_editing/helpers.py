@@ -183,14 +183,15 @@ def _render_subtitle_overlays(
                 font=font,
                 fill=(0, 0, 0, 80),
             )
-            # Stroke (outline)
-            for dx in range(-stroke_width, stroke_width + 1):
-                for dy in range(-stroke_width, stroke_width + 1):
-                    if dx == 0 and dy == 0:
-                        continue
-                    draw.text((x + dx, y + dy), line, font=font, fill=(0, 0, 0, 220))
-            # Main text (white)
-            draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
+            # Main text with built-in stroke (PIL 8.2+, much faster and cleaner than manual loop)
+            draw.text(
+                (x, y),
+                line,
+                font=font,
+                fill=(255, 255, 255, 255),
+                stroke_width=stroke_width,
+                stroke_fill=(0, 0, 0, 220),
+            )
 
         import uuid
         png_path = os.path.join(temp_dir, f"sub_{uuid.uuid4().hex[:8]}.png")

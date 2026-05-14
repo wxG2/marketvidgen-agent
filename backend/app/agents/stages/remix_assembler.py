@@ -89,7 +89,7 @@ class RemixAssemblerAgent(BaseAgent):
             await context.report_progress("正在拼接混剪片段...", agent_name=self.name)
             merged_path = os.path.join(temp_dir, "remix_merged.mp4")
             transition = self._primary_transition(segments)
-            if transition != "none" and strategy not in {"source_audio", "mix"} and len(clip_paths) > 1:
+            if transition != "none" and strategy != "source_audio" and len(clip_paths) > 1:
                 merged_path = await _concat_with_xfade(
                     self.ffmpeg_bin,
                     clip_paths,
@@ -216,7 +216,8 @@ class RemixAssemblerAgent(BaseAgent):
 
         duration = await _probe_duration(self.ffmpeg_bin, input_path, run_subprocess) or 30.0
         volume = _clamp_float(audio_design.get("bgm_volume"), 0.0, 1.0, 0.15)
-        fade_out_start = max(duration - 2.0, 0)
+        fade_duration = min(2.0, duration * 0.15)
+        fade_out_start = max(duration - fade_duration, 0)
         if strategy == "mix" and await self._has_audio_stream(input_path):
             rc, _, stderr = await run_subprocess(
                 self.ffmpeg_bin,
@@ -230,7 +231,7 @@ class RemixAssemblerAgent(BaseAgent):
                 "-filter_complex",
                 (
                     f"[0:a]volume=0.30[src];"
-                    f"[1:a]volume={volume:.2f},afade=t=in:d=1.0,afade=t=out:st={fade_out_start:.3f}:d=2.0[bgm];"
+                    f"[1:a]volume={volume:.2f},afade=t=in:d=1.0,afade=t=out:st={fade_out_start:.3f}:d={fade_duration:.3f}[bgm];"
                     "[src][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]"
                 ),
                 "-map",
@@ -260,7 +261,7 @@ class RemixAssemblerAgent(BaseAgent):
             "-i",
             bgm_path,
             "-filter_complex",
-            f"[1:a]volume={volume:.2f},afade=t=in:d=1.0,afade=t=out:st={fade_out_start:.3f}:d=2.0[bgm]",
+            f"[1:a]volume={volume:.2f},afade=t=in:d=1.0,afade=t=out:st={fade_out_start:.3f}:d={fade_duration:.3f}[bgm]",
             "-map",
             "0:v:0",
             "-map",

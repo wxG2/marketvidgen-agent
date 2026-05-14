@@ -328,6 +328,7 @@ class RemixPlannerAgent(BaseAgent):
         selected_candidates = self._select_segment_candidates(candidates, target_duration)
         if not selected_candidates:
             return self._fallback_plan(profiles, input_data)
+        selected_candidates = self._diversify_candidates(selected_candidates, profiles)
 
         segments = self._materialize_segments(
             selected_candidates,
@@ -495,6 +496,58 @@ class RemixPlannerAgent(BaseAgent):
         emotion_bonus = 2.0 if emotion in PREFERRED_REMIX_EMOTIONS else 0.0
         quality_bonus = 2.0 if quality >= 7.0 else 0.0
         return llm_boost + quality * 2.0 + emotion_bonus + quality_bonus + max(shot.scene_change_score, 0.0) * 0.5
+
+    @staticmethod
+    def _diversify_candidates(
+        selected: list[dict[str, Any]],
+        profiles: list[VideoProfile],
+        max_ratio: float = 0.6,
+    ) -> list[dict[str, Any]]:
+        """Ensure no single source video dominates more than max_ratio of selected segments."""
+        if len(selected) < 2 or len(profiles) < 2:
+            return selected
+
+        from collections import Counter
+        video_counts: Counter = Counter(item["shot"].video_id for item in selected)
+        total = len(selected)
+        dominant_id, dominant_count = video_counts.most_common(1)[0]
+        if dominant_count / total <= max_ratio:
+            return selected
+
+        # Find candidates from under-represented videos to swap in
+        all_eligible = {
+            p.video_id: sorted(p.shots, key=lambda s: s.visual_quality_score, reverse=True)
+            for p in profiles
+            if p.video_id != dominant_id and p.shots
+        }
+        if not all_eligible:
+            return selected
+
+        max_allowed = max(1, int(total * max_ratio))
+        excess = dominant_count - max_allowed
+
+        result = list(selected)
+        dominant_indices = [
+            i for i, item in enumerate(result) if item["shot"].video_id == dominant_id
+        ]
+        # Swap lowest-scored dominant shots with best shots from other videos
+        dominant_indices.sort(
+            key=lambda i: result[i]["shot"].visual_quality_score
+        )
+        swapped = 0
+        for alt_shots in all_eligible.values():
+            if swapped >= excess:
+                break
+            for alt_shot in alt_shots:
+                if swapped >= excess or not dominant_indices:
+                    break
+                swap_idx = dominant_indices.pop(0)
+                swap_item = dict(result[swap_idx])
+                swap_item["shot"] = alt_shot
+                swap_item["raw_segment"] = {}
+                result[swap_idx] = swap_item
+                swapped += 1
+        return result
 
     def _select_segment_candidates(self, candidates: list[dict[str, Any]], target_duration: float) -> list[dict[str, Any]]:
         if not candidates:
