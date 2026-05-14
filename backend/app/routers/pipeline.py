@@ -28,12 +28,13 @@ from app.core.security import (
 )
 from app.core.config import settings
 from app.db.session import get_db
-from app.models.auto_chat import AutoChatSession
+from app.models.auto_chat import AutoChatSession, AutoSessionMaterialSelection
 from app.models.material import Material
 from app.models.pipeline import PipelineRun, AgentExecution
 from app.models.repository_asset import RepositoryAsset
 from app.models.social_account import SocialAccount
 from app.models.video_delivery import VideoDelivery
+from app.models.video_upload import VideoUpload
 from app.models.user import User
 from app.schemas.pipeline import (
     PipelineCreateRequest,
@@ -50,6 +51,7 @@ from app.schemas.pipeline import (
     PrefightCheckRequest,
     PrefightCheckResponse,
     ConfirmPlanRequest,
+    ConfirmRemixRequest,
     ConfirmPromptReviewRequest,
     RetryShotRequest,
     EstimateCostRequest,
@@ -123,6 +125,78 @@ def _get_launch_lock(lock_key: str) -> asyncio.Lock:
     return lock
 
 
+def _unique_video_ids(video_ids: list[str] | None) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for video_id in video_ids or []:
+        if not video_id or video_id in seen:
+            continue
+        seen.add(video_id)
+        unique.append(video_id)
+    return unique
+
+
+async def _validate_pipeline_reference_videos(
+    db: AsyncSession,
+    *,
+    project_id: str,
+    reference_video_id: str | None,
+    reference_video_ids: list[str],
+) -> list[str]:
+    candidate_ids = _unique_video_ids(
+        ([reference_video_id] if reference_video_id else []) + reference_video_ids
+    )
+    for video_id in candidate_ids:
+        upload = await db.get(VideoUpload, video_id)
+        if not upload or upload.project_id != project_id:
+            raise HTTPException(status_code=400, detail="Reference video does not belong to this project")
+    return _unique_video_ids(reference_video_ids)
+
+
+async def _validate_pipeline_bgm_material(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    session_id: str | None,
+    bgm_material_id: str,
+) -> None:
+    material = await db.get(Material, bgm_material_id)
+    if not material or material.user_id != user_id:
+        raise HTTPException(status_code=400, detail="BGM material does not belong to this user")
+    if not str(material.media_type or "").startswith("audio"):
+        raise HTTPException(status_code=400, detail="BGM material must be an audio file")
+
+
+async def _first_session_audio_material_id(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    session_id: str | None,
+) -> str | None:
+    if session_id:
+        result = await db.execute(
+            select(Material.id)
+            .join(AutoSessionMaterialSelection, AutoSessionMaterialSelection.material_id == Material.id)
+            .where(
+                AutoSessionMaterialSelection.session_id == session_id,
+                Material.user_id == user_id,
+                Material.media_type == "audio",
+            )
+            .order_by(AutoSessionMaterialSelection.sort_order.asc(), AutoSessionMaterialSelection.created_at.asc())
+            .limit(1)
+        )
+        material_id = result.scalars().first()
+        if material_id:
+            return material_id
+    result = await db.execute(
+        select(Material.id)
+        .where(Material.user_id == user_id, Material.media_type == "audio")
+        .order_by(Material.created_at.desc())
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
 def _build_replication_narration_script(replication_plan: dict, fallback_script: str) -> str:
     if not isinstance(replication_plan, dict):
         return fallback_script
@@ -187,6 +261,12 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
         lock_key = req.session_id or project_id
 
         async with _get_launch_lock(lock_key):
+            reference_video_ids = await _validate_pipeline_reference_videos(
+                db,
+                project_id=project_id,
+                reference_video_id=req.reference_video_id,
+                reference_video_ids=req.reference_video_ids,
+            )
             # --- deduplication check ---
             dedupe_conditions = [
                 PipelineRun.project_id == project_id,
@@ -222,6 +302,25 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
 
             # --- create new run ---
             input_config = req.model_dump()
+            input_config["reference_video_ids"] = reference_video_ids
+            remix_config = input_config.get("remix_config")
+            if isinstance(remix_config, dict) and len(reference_video_ids) >= 2:
+                bgm_material_id = str(remix_config.get("bgm_material_id") or "").strip()
+                if bgm_material_id:
+                    await _validate_pipeline_bgm_material(
+                        db,
+                        user_id=user.id,
+                        session_id=req.session_id,
+                        bgm_material_id=bgm_material_id,
+                    )
+                elif req.session_id:
+                    first_audio_id = await _first_session_audio_material_id(
+                        db,
+                        user_id=user.id,
+                        session_id=req.session_id,
+                    )
+                    if first_audio_id:
+                        remix_config["bgm_material_id"] = first_audio_id
             input_config["video_model_no_audio"] = (
                 req.video_model_no_audio if req.video_model_no_audio is not None else req.no_audio
             )
@@ -247,7 +346,7 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
             await db.flush()
             if session is not None:
                 session.current_run_id = run.id
-                session.reference_video_id = req.reference_video_id
+                session.reference_video_id = req.reference_video_id or (input_config["reference_video_ids"][0] if input_config["reference_video_ids"] else None)
                 session.background_template_id = req.background_template_id
                 session.draft_script = req.script
                 session.video_platform = req.platform
@@ -639,7 +738,7 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
         run = await get_pipeline_run_for_user(db, user.id, run_id)
         if run.project_id != project_id:
             raise HTTPException(status_code=404, detail="Pipeline run not found")
-        if run.status not in ("pending", "running", "waiting_confirmation", "waiting_prompt_review"):
+        if run.status not in ("pending", "running", "waiting_confirmation", "waiting_prompt_review", "waiting_remix_confirmation"):
             raise HTTPException(status_code=400, detail=f"Cannot cancel pipeline in '{run.status}' status")
 
         run.status = "cancelled"
@@ -792,6 +891,89 @@ def get_pipeline_router(executor: PipelineExecutor) -> APIRouter:
         _pipeline_tasks[run.id] = _task
         _task.add_done_callback(lambda t: _pipeline_tasks.pop(run.id, None))
         return {"status": "confirmed", "message": "复刻方案已确认，继续生成中"}
+
+    @router.post("/projects/{project_id}/pipeline/{run_id}/confirm-remix")
+    async def confirm_remix_plan(
+        project_id: str,
+        run_id: str,
+        req: ConfirmRemixRequest,
+        request: Request,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        """Confirm or adjust the remix plan produced by the remix planner."""
+        run = await get_pipeline_run_for_user(db, user.id, run_id)
+        if run.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Pipeline run not found")
+        if run.status != "waiting_remix_confirmation":
+            raise HTTPException(status_code=400, detail=f"Pipeline is not waiting for remix confirmation (status: {run.status})")
+
+        input_config = json.loads(run.input_config) if run.input_config else {}
+
+        if not req.approved:
+            if req.adjustments:
+                adjusted_config = {**input_config, "remix_adjustment_feedback": req.adjustments}
+                snapshot = json.loads(run.artifacts_snapshot or "{}")
+                snapshot.pop("audio", None)
+                run.status = "running"
+                run.current_agent = "remix_planner"
+                run.input_config = json.dumps(adjusted_config, ensure_ascii=False)
+                run.artifacts_snapshot = json.dumps(snapshot, ensure_ascii=False)
+                run.updated_at = datetime.now(timezone.utc)
+                if run.session_id:
+                    session = await get_auto_chat_session_for_user(db, user.id, project_id, run.session_id)
+                    session.status_preview = "重新生成混剪方案中"
+                    session.last_activity_at = run.updated_at
+                await db.commit()
+                launch_pipeline_task(
+                    executor, run.id, project_id, adjusted_config,
+                    user_id=user.id,
+                    memory_service=getattr(request.app.state, "agent_memory", None),
+                    mem0=getattr(request.app.state, "mem0", None),
+                    rag_service=getattr(request.app.state, "rag", None),
+                )
+                return {"status": "rerunning", "message": "正在根据反馈重新生成混剪方案"}
+
+            run.status = "cancelled"
+            run.updated_at = datetime.now(timezone.utc)
+            if run.session_id:
+                session = await get_auto_chat_session_for_user(db, user.id, project_id, run.session_id)
+                session.status_preview = "已取消"
+                session.last_activity_at = run.updated_at
+            await db.commit()
+            return {"status": "cancelled"}
+
+        snapshot: dict = json.loads(run.artifacts_snapshot or "{}")
+        remix_plan = snapshot.get("remix_plan")
+        if not isinstance(remix_plan, dict):
+            remix_output = snapshot.get("remix_planner") if isinstance(snapshot.get("remix_planner"), dict) else {}
+            remix_plan = remix_output.get("remix_plan")
+        if not isinstance(remix_plan, dict) or not remix_plan.get("segments"):
+            raise HTTPException(status_code=400, detail="No remix plan found")
+
+        _apply_remix_edits(remix_plan, req)
+        snapshot["remix_plan"] = remix_plan
+        run.artifacts_snapshot = json.dumps(snapshot, ensure_ascii=False)
+        run.status = "running"
+        run.current_agent = "remix_assembler"
+        run.updated_at = datetime.now(timezone.utc)
+        if run.session_id:
+            session = await get_auto_chat_session_for_user(db, user.id, project_id, run.session_id)
+            session.status_preview = "正在组装混剪视频"
+            session.last_activity_at = run.updated_at
+        await db.commit()
+
+        _task = asyncio.create_task(
+            _continue_from_remix_confirmation(
+                executor, run.id, project_id, input_config, snapshot,
+                user_id=user.id,
+                memory_service=getattr(request.app.state, "agent_memory", None),
+                mem0=getattr(request.app.state, "mem0", None),
+            )
+        )
+        _pipeline_tasks[run.id] = _task
+        _task.add_done_callback(lambda t: _pipeline_tasks.pop(run.id, None))
+        return {"status": "confirmed", "message": "混剪方案已确认，正在组装视频"}
 
     @router.post("/projects/{project_id}/pipeline/{run_id}/confirm-prompt-review")
     async def confirm_prompt_review(
@@ -1143,6 +1325,96 @@ async def _continue_from_confirmation(
 
     except Exception as e:
         log.error(f"Continue from confirmation failed for pipeline {run_id}: {e}", exc_info=True)
+        async with async_session() as session:
+            run = await session.get(PipelineRun, run_id)
+            if run and run.status != "cancelled":
+                run.status = "failed"
+                run.error_message = str(e)
+                run.updated_at = datetime.now(timezone.utc)
+                await session.commit()
+
+
+def _apply_remix_edits(remix_plan: dict, req: ConfirmRemixRequest) -> None:
+    segments = remix_plan.get("segments")
+    if not isinstance(segments, list):
+        return
+    edits = {edit.segment_idx: edit for edit in req.edited_segments}
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        edit = edits.get(int(segment.get("segment_idx", -1)))
+        if edit is None:
+            continue
+        if edit.removed:
+            segment["removed"] = True
+        if edit.source_video_id:
+            segment["source_video_id"] = edit.source_video_id
+        if edit.start_seconds is not None:
+            segment["start_seconds"] = edit.start_seconds
+        if edit.end_seconds is not None:
+            segment["end_seconds"] = edit.end_seconds
+        if edit.transition_type is not None:
+            segment["transition_to_next"] = edit.transition_type
+
+
+async def _continue_from_remix_confirmation(
+    executor: PipelineExecutor,
+    run_id: str,
+    project_id: str,
+    input_config: dict,
+    saved_artifacts: dict,
+    user_id: str | None = None,
+    memory_service=None,
+    mem0=None,
+):
+    """Background task: assemble a confirmed remix plan."""
+    import logging
+    import uuid
+    from app.agents.base import AgentContext
+    from app.services.usage_service import UsageRecorder
+
+    log = logging.getLogger(__name__)
+    try:
+        context = AgentContext(
+            trace_id=str(uuid.uuid4()),
+            pipeline_run_id=run_id,
+            project_id=project_id,
+            db_session_factory=async_session,
+            usage_recorder=UsageRecorder(async_session),
+            artifacts=saved_artifacts,
+            user_id=user_id,
+            memory_service=memory_service,
+            mem0=mem0,
+        )
+
+        result = await executor.resume_from_remix_confirmation(context, input_config)
+        if isinstance(result, dict) and result.get("status") == "waiting_remix_confirmation":
+            async with async_session() as session:
+                run = await session.get(PipelineRun, run_id)
+                if run and run.status != "cancelled":
+                    run.status = "waiting_remix_confirmation"
+                    run.current_agent = "remix_planner"
+                    run.updated_at = datetime.now(timezone.utc)
+                    if run.session_id:
+                        chat_session = await session.get(AutoChatSession, run.session_id)
+                        if chat_session:
+                            chat_session.status_preview = "等待确认混剪方案"
+                            chat_session.last_activity_at = run.updated_at
+                    await session.commit()
+            return
+        final_video = result.get("final_video_path") if isinstance(result, dict) else None
+        async with async_session() as session:
+            run = await session.get(PipelineRun, run_id)
+            if run and run.status != "cancelled":
+                run.status = "completed"
+                run.final_video_path = final_video
+                run.completed_at = datetime.now(timezone.utc)
+                run.updated_at = datetime.now(timezone.utc)
+                await session.commit()
+        await _auto_save_run_to_repository(run_id)
+
+    except Exception as e:
+        log.error(f"Continue from remix confirmation failed for pipeline {run_id}: {e}", exc_info=True)
         async with async_session() as session:
             run = await session.get(PipelineRun, run_id)
             if run and run.status != "cancelled":
