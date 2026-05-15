@@ -639,15 +639,21 @@ class RemixPlannerAgent(BaseAgent):
             (item["shot"].video_id, item["shot"].shot_idx) for item in selected
         }
 
+        # Only shots meeting the minimum-duration bar are valid swap candidates;
+        # otherwise diversification can inject sub-1s shots and fail validation.
+        def _eligible(shots: list[ShotProfile]) -> list[ShotProfile]:
+            return [s for s in shots if s.duration_seconds >= MIN_REMIX_SEGMENT_DURATION_SECONDS]
+
         # Pass 1: Guarantee each source video has at least 1 segment.
         # For any absent video, swap out the weakest segment from the currently dominant video.
         result = list(selected)
         for profile in profiles:
             if video_counts.get(profile.video_id, 0) > 0:
                 continue
-            if not profile.shots:
+            eligible = _eligible(profile.shots)
+            if not eligible:
                 continue
-            best_alt = max(profile.shots, key=lambda s: s.visual_quality_score)
+            best_alt = max(eligible, key=lambda s: s.visual_quality_score)
             # Defensive: skip if best_alt is somehow already selected.
             if (best_alt.video_id, best_alt.shot_idx) in selected_keys:
                 continue
@@ -674,9 +680,9 @@ class RemixPlannerAgent(BaseAgent):
         dominant_id2, dominant_count2 = video_counts.most_common(1)[0]
         if dominant_count2 / total > max_ratio:
             all_eligible = {
-                p.video_id: sorted(p.shots, key=lambda s: s.visual_quality_score, reverse=True)
+                p.video_id: sorted(_eligible(p.shots), key=lambda s: s.visual_quality_score, reverse=True)
                 for p in profiles
-                if p.video_id != dominant_id2 and p.shots
+                if p.video_id != dominant_id2 and _eligible(p.shots)
             }
             max_allowed = max(1, int(total * max_ratio))
             excess = dominant_count2 - max_allowed
@@ -718,7 +724,7 @@ class RemixPlannerAgent(BaseAgent):
             (
                 shot
                 for profile in profiles
-                for shot in profile.shots
+                for shot in _eligible(profile.shots)
                 if (shot.video_id, shot.shot_idx) not in selected_keys
             ),
             key=lambda s: s.visual_quality_score,
