@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 MIN_REMIX_SEGMENT_DURATION_SECONDS = 1.0
 REMIX_TARGET_TOLERANCE_SECONDS = 2.0
+# Two shots from the same source video must be at least this many seconds apart
+# (end of the earlier shot to start of the later shot) to prevent near-duplicate footage.
+MIN_SAME_VIDEO_GAP_SECONDS = 3.0
 PREFERRED_REMIX_EMOTIONS = {"calm", "warm", "neutral"}
 
 
@@ -698,6 +701,72 @@ class RemixPlannerAgent(BaseAgent):
                     selected_keys.discard(old_key)
                     selected_keys.add((alt_shot.video_id, alt_shot.shot_idx))
                     swapped += 1
+
+        # Pass 3: same-source-video shots must be at least MIN_SAME_VIDEO_GAP_SECONDS apart.
+        # Shots close in time within the same source video typically share scene/composition
+        # and produce repetitive footage even though their shot_idx differs.
+        def _too_close(a: ShotProfile, b: ShotProfile) -> bool:
+            if a.video_id != b.video_id or a.shot_idx == b.shot_idx:
+                return False
+            gap = min(
+                abs(b.start_seconds - a.end_seconds),
+                abs(a.start_seconds - b.end_seconds),
+            )
+            return gap < MIN_SAME_VIDEO_GAP_SECONDS
+
+        unused_pool: list[ShotProfile] = sorted(
+            (
+                shot
+                for profile in profiles
+                for shot in profile.shots
+                if (shot.video_id, shot.shot_idx) not in selected_keys
+            ),
+            key=lambda s: s.visual_quality_score,
+            reverse=True,
+        )
+
+        # At most len(result) sweeps — bounded to avoid pathological loops.
+        for _ in range(len(result)):
+            violation = None
+            for i in range(len(result)):
+                for k in range(i + 1, len(result)):
+                    if _too_close(result[i]["shot"], result[k]["shot"]):
+                        # Drop the lower-quality of the pair.
+                        if result[i]["shot"].visual_quality_score <= result[k]["shot"].visual_quality_score:
+                            violation = i
+                        else:
+                            violation = k
+                        break
+                if violation is not None:
+                    break
+            if violation is None:
+                break
+
+            victim_key = (result[violation]["shot"].video_id, result[violation]["shot"].shot_idx)
+            replaced = False
+            for alt in list(unused_pool):
+                alt_key = (alt.video_id, alt.shot_idx)
+                # alt must not violate gaps with any OTHER currently-selected shot.
+                if any(
+                    _too_close(alt, item["shot"])
+                    for j, item in enumerate(result)
+                    if j != violation
+                ):
+                    continue
+                swap_item = dict(result[violation])
+                swap_item["shot"] = alt
+                swap_item["raw_segment"] = {}
+                result[violation] = swap_item
+                selected_keys.discard(victim_key)
+                selected_keys.add(alt_key)
+                unused_pool.remove(alt)
+                replaced = True
+                break
+
+            if not replaced:
+                # No safe replacement — leave the violation rather than corrupt the selection.
+                # Future runs with more source material will recover.
+                break
 
         return result
 
