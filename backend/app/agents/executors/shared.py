@@ -299,10 +299,13 @@ class PipelineExecutorSupportMixin:
         }
 
     def build_remix_assembler_input(self, artifacts: dict[str, Any], input_config: dict[str, Any]) -> dict[str, Any]:
+        remix_planner_output = artifacts.get("remix_planner") if isinstance(artifacts.get("remix_planner"), dict) else {}
         return {
             "remix_plan": artifacts.get("remix_plan", {}),
             "audio": artifacts.get("audio", {}),
             "input_config": input_config,
+            # Used by the assembler to pick filler shots when per-segment TTS overflows the planned video duration.
+            "video_profiles": remix_planner_output.get("video_profiles", []),
         }
 
     async def run_remix_audio_if_needed(self, context, input_config: dict[str, Any]) -> dict[str, Any] | None:

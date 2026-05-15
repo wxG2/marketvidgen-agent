@@ -631,6 +631,10 @@ class RemixPlannerAgent(BaseAgent):
 
         from collections import Counter
         video_counts: Counter = Counter(item["shot"].video_id for item in selected)
+        # Track which (video_id, shot_idx) are already in the result so swaps never duplicate.
+        selected_keys: set[tuple[str, int]] = {
+            (item["shot"].video_id, item["shot"].shot_idx) for item in selected
+        }
 
         # Pass 1: Guarantee each source video has at least 1 segment.
         # For any absent video, swap out the weakest segment from the currently dominant video.
@@ -641,6 +645,9 @@ class RemixPlannerAgent(BaseAgent):
             if not profile.shots:
                 continue
             best_alt = max(profile.shots, key=lambda s: s.visual_quality_score)
+            # Defensive: skip if best_alt is somehow already selected.
+            if (best_alt.video_id, best_alt.shot_idx) in selected_keys:
+                continue
             dominant_id = video_counts.most_common(1)[0][0]
             dominant_indices = sorted(
                 [i for i, item in enumerate(result) if item["shot"].video_id == dominant_id],
@@ -649,10 +656,13 @@ class RemixPlannerAgent(BaseAgent):
             if not dominant_indices:
                 continue
             swap_idx = dominant_indices[0]
+            old_key = (result[swap_idx]["shot"].video_id, result[swap_idx]["shot"].shot_idx)
             swap_item = dict(result[swap_idx])
             swap_item["shot"] = best_alt
             swap_item["raw_segment"] = {}
             result[swap_idx] = swap_item
+            selected_keys.discard(old_key)
+            selected_keys.add((best_alt.video_id, best_alt.shot_idx))
             video_counts[dominant_id] -= 1
             video_counts[profile.video_id] = video_counts.get(profile.video_id, 0) + 1
 
@@ -676,11 +686,17 @@ class RemixPlannerAgent(BaseAgent):
                 for alt_shot in alt_shots:
                     if swapped >= excess or not dominant_indices2:
                         break
+                    # Skip alts that are already in the selection — prevents duplicate shots.
+                    if (alt_shot.video_id, alt_shot.shot_idx) in selected_keys:
+                        continue
                     swap_idx = dominant_indices2.pop(0)
+                    old_key = (result[swap_idx]["shot"].video_id, result[swap_idx]["shot"].shot_idx)
                     swap_item = dict(result[swap_idx])
                     swap_item["shot"] = alt_shot
                     swap_item["raw_segment"] = {}
                     result[swap_idx] = swap_item
+                    selected_keys.discard(old_key)
+                    selected_keys.add((alt_shot.video_id, alt_shot.shot_idx))
                     swapped += 1
 
         return result

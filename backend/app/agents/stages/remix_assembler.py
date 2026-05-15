@@ -114,6 +114,7 @@ class RemixAssemblerAgent(BaseAgent):
                         float(voiceover_config.get("voice_speed") or 1.0),
                         temp_dir,
                         source_paths,
+                        input_data.get("video_profiles") or [],
                     )
 
             clip_paths = await asyncio.gather(
@@ -212,41 +213,78 @@ class RemixAssemblerAgent(BaseAgent):
         speed: float,
         temp_dir: str,
         source_paths: dict[str, str],  # noqa: ARG002 (reserved for future per-segment path validation)
+        video_profiles: list[dict],
     ) -> tuple[str, list[dict]] | None:
-        """Generate TTS per segment, then extend each segment's end_seconds so the
-        video clip is long enough to cover the full voiceover sentence.
+        """Generate TTS per segment.  When a segment's TTS audio is longer than
+        the planned video duration, only stretch the segment by a modest amount
+        and insert additional filler shots (from unused source-video shots) after
+        it — so the voiceover plays across the segment + fillers instead of
+        bloating a single clip up to 10s.
 
         Returns (combined_audio_path, merged_timed_subtitle_segments) for use in
         _apply_voiceover_subtitles, or None if no voiceover texts found.
         """
+        # Track which (video_id, shot_idx) the current plan already consumes so we
+        # don't pick fillers that duplicate existing shots.
+        used_keys: set[tuple[str, int]] = {
+            (str(seg.get("source_video_id")), int(seg.get("source_shot_idx", -1)))
+            for seg in segments
+            if seg.get("source_video_id") is not None and seg.get("source_shot_idx") is not None
+        }
+
         per_segment_items: list[tuple[str, list[dict], float]] = []
         offset_s = 0.0
-
-        for segment in segments:
+        i = 0
+        while i < len(segments):
+            segment = segments[i]
             text = str(segment.get("voiceover") or segment.get("script_segment") or segment.get("narration") or "").strip()
-            if text:
-                tts_result = await self.tts_service.synthesize(text=text, voice_id=voice_id, speed=speed)
-                sub_path = await self.tts_service.generate_subtitles(text=text, audio_path=tts_result.audio_path)
-                tts_dur = await _probe_duration(self.ffmpeg_bin, tts_result.audio_path, run_subprocess) or 0.0
-                raw_subs = _parse_srt_timed(sub_path) if sub_path and os.path.exists(sub_path) else []
-                subs = [
-                    {"start_s": s["start_s"] + offset_s, "end_s": s["end_s"] + offset_s, "text": s["text"]}
-                    for s in raw_subs
-                ]
-                per_segment_items.append((tts_result.audio_path, subs, tts_dur))
-
-                # Balance: extend segment video to cover the full voiceover sentence.
-                # Clamped to 3× planned duration to avoid pulling too much source footage.
-                planned = _segment_duration(segment)
-                if tts_dur > planned + 0.05:
-                    new_dur = min(tts_dur, planned * 3.0, 10.0)
-                    segment["end_seconds"] = round(float(segment["start_seconds"]) + new_dur, 3)
-                    offset_s += new_dur
-                else:
-                    offset_s += planned
-            else:
+            if not text:
                 per_segment_items.append(("", [], 0.0))
                 offset_s += _segment_duration(segment)
+                i += 1
+                continue
+
+            tts_result = await self.tts_service.synthesize(text=text, voice_id=voice_id, speed=speed)
+            sub_path = await self.tts_service.generate_subtitles(text=text, audio_path=tts_result.audio_path)
+            tts_dur = await _probe_duration(self.ffmpeg_bin, tts_result.audio_path, run_subprocess) or 0.0
+            raw_subs = _parse_srt_timed(sub_path) if sub_path and os.path.exists(sub_path) else []
+            subs = [
+                {"start_s": s["start_s"] + offset_s, "end_s": s["end_s"] + offset_s, "text": s["text"]}
+                for s in raw_subs
+            ]
+            per_segment_items.append((tts_result.audio_path, subs, tts_dur))
+
+            planned = _segment_duration(segment)
+            if tts_dur > planned + 0.05:
+                # Step 1: extend the current segment modestly so visual rhythm stays balanced.
+                modest_cap = min(planned + 1.5, planned * 1.5)
+                segment_dur = min(tts_dur, modest_cap)
+                segment["end_seconds"] = round(float(segment["start_seconds"]) + segment_dur, 3)
+                offset_s += segment_dur
+
+                # Step 2: cover remaining overflow with filler shots from unused source material.
+                overflow = tts_dur - segment_dur
+                if overflow > 0.1:
+                    fillers = self._pick_filler_shots(video_profiles, used_keys, overflow)
+                    # Break any transition the original segment had — fillers join with a cut.
+                    if fillers:
+                        segment["transition_to_next"] = "cut"
+                        segment["transition_duration"] = 0.0
+                    for filler in fillers:
+                        new_seg = self._build_filler_segment(filler)
+                        segments.insert(i + 1, new_seg)
+                        per_segment_items.append(("", [], 0.0))
+                        used_keys.add((filler["video_id"], filler["shot_idx"]))
+                        offset_s += filler["duration"]
+                        i += 1
+            else:
+                offset_s += planned
+
+            i += 1
+
+        # Renumber segment_idx so downstream consumers see a contiguous sequence.
+        for new_idx, seg in enumerate(segments):
+            seg["segment_idx"] = new_idx
 
         if not any(p[0] for p in per_segment_items):
             return None
@@ -287,6 +325,56 @@ class RemixAssemblerAgent(BaseAgent):
         if rc != 0:
             raise RuntimeError(f"ffmpeg pre-generate voiceover combine failed: {stderr}")
         return combined_path, merged_subs
+
+    @staticmethod
+    def _pick_filler_shots(
+        video_profiles: list[dict],
+        used_keys: set[tuple[str, int]],
+        overflow: float,
+    ) -> list[dict]:
+        """Return a list of unused shots totalling at least `overflow` seconds.
+        Greedy: pick by descending duration to minimise the number of extra cuts."""
+        candidates: list[dict] = []
+        for profile in video_profiles or []:
+            for shot in profile.get("shots") or []:
+                key = (str(shot.get("video_id")), int(shot.get("shot_idx", -1)))
+                if key in used_keys:
+                    continue
+                dur = float(shot.get("duration_seconds") or 0)
+                if dur < 1.0:
+                    continue
+                candidates.append({
+                    "video_id": str(shot.get("video_id")),
+                    "shot_idx": int(shot.get("shot_idx", -1)),
+                    "start_seconds": float(shot.get("start_seconds") or 0),
+                    "end_seconds": float(shot.get("end_seconds") or 0),
+                    "duration": dur,
+                })
+        candidates.sort(key=lambda x: x["duration"], reverse=True)
+        fillers: list[dict] = []
+        remaining = overflow
+        for c in candidates:
+            if remaining <= 0:
+                break
+            fillers.append(c)
+            remaining -= c["duration"]
+        return fillers
+
+    @staticmethod
+    def _build_filler_segment(filler: dict) -> dict:
+        """Build a segment dict for a filler shot (no voiceover)."""
+        return {
+            "segment_idx": 0,  # renumbered after the TTS loop
+            "source_video_id": filler["video_id"],
+            "source_shot_idx": filler["shot_idx"],
+            "start_seconds": round(filler["start_seconds"], 3),
+            "end_seconds": round(filler["end_seconds"], 3),
+            "description": "补片：填充旁白溢出时长",
+            "narrative_role": "buildup",
+            "emotion_tag": "neutral",
+            "transition_to_next": "cut",
+            "transition_duration": 0.0,
+        }
 
     async def _resolve_target_dimensions(
         self, source_paths: list[str], *, platform: str = "generic"
