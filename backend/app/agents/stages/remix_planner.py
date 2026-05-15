@@ -332,7 +332,21 @@ class RemixPlannerAgent(BaseAgent):
 
         raw_segments = [item for item in plan.get("segments") or [] if isinstance(item, dict)]
         candidates = self._segment_candidates(raw_segments, eligible_shots)
-        selected_candidates = self._select_segment_candidates(candidates, target_duration)
+
+        # When re-planning to add segments, force-include the previously chosen shots
+        # and spend the remaining duration budget on new ones.
+        locked_hint = input_data.get("_locked_segments") or []
+        locked_keys: set[tuple[str, int]] = {(str(vid), int(sidx)) for vid, sidx in locked_hint if sidx >= 0}
+        if locked_keys:
+            locked_candidates = [c for c in candidates if (c["shot"].video_id, c["shot"].shot_idx) in locked_keys]
+            unlocked_candidates = [c for c in candidates if (c["shot"].video_id, c["shot"].shot_idx) not in locked_keys]
+            locked_total = sum(float(c["shot"].duration_seconds) for c in locked_candidates)
+            remaining_budget = max(MIN_REMIX_SEGMENT_DURATION_SECONDS, target_duration - locked_total)
+            new_candidates = self._select_segment_candidates(unlocked_candidates, remaining_budget)
+            selected_candidates = locked_candidates + new_candidates
+        else:
+            selected_candidates = self._select_segment_candidates(candidates, target_duration)
+
         if not selected_candidates:
             return self._fallback_plan(profiles, input_data)
         selected_candidates = self._diversify_candidates(selected_candidates, profiles)

@@ -347,30 +347,11 @@ class PipelineExecutorSupportMixin:
         if not audio_duration:
             return None
 
-        # Check if audio is significantly over the voiceover cap
-        remix_plan = context.artifacts.get("remix_plan")
-        if isinstance(remix_plan, dict):
-            segments = [
-                seg for seg in (remix_plan.get("segments") or [])
-                if isinstance(seg, dict) and not seg.get("removed")
-            ]
-            voiceover_cap = self._compute_voiceover_cap_seconds(segments) if segments else 30.0
-
-            if audio_duration > voiceover_cap + 0.5:
-                # Audio exceeds cap: attempt voiceover compression and TTS retry
-                retry_result = await self._retry_tts_with_compressed_voiceover(
-                    context, input_config, audio_duration, voiceover_cap, remix_plan, segments
-                )
-                if retry_result:
-                    return retry_result
-                # If retry didn't fully resolve, mark as compressed and continue
-                if isinstance(context.artifacts.get("remix_plan"), dict):
-                    timing = context.artifacts["remix_plan"].setdefault("timing_adjustment", {})
-                    timing["strategy"] = "voiceover_compressed"
-
         alignment = self.align_remix_plan_to_audio(context.artifacts, audio_duration)
-        if alignment.get("requires_replan"):
-            return await self._rerun_remix_planner_for_audio_duration(context, input_config, audio_duration)
+        if alignment.get("requires_replan_add_segments"):
+            return await self._rerun_remix_planner_add_segments(
+                context, input_config, audio_duration, alignment.get("current_segments") or []
+            )
 
         if alignment.get("changed"):
             context.artifacts["remix_plan"] = alignment["remix_plan"]
@@ -489,7 +470,6 @@ class PipelineExecutorSupportMixin:
         if original_duration <= 0:
             return {"changed": False}
 
-        voiceover_cap = self._compute_voiceover_cap_seconds(segments)
         source_durations = self._remix_source_durations(artifacts)
         max_durations = [
             self._max_segment_duration(segment, source_durations, fallback=duration)
@@ -497,21 +477,26 @@ class PipelineExecutorSupportMixin:
         ]
         max_total = sum(max_durations)
 
-        # Video-priority: target is capped at voiceover_cap, not full audio duration
-        target_duration = min(max(float(audio_duration_seconds), 1.0), voiceover_cap)
+        # Video-priority: never compress video to match a shorter voiceover.
+        # When audio is shorter, keep the planned video duration intact — BGM fills the tail.
+        # Only extend when audio is genuinely longer than the planned video.
+        if audio_duration_seconds <= original_duration + 0.25:
+            return {"changed": False}
 
-        # Only replan when material itself is insufficient for reasonable cap
+        target_duration = float(audio_duration_seconds)
+
+        # If even fully-extended existing segments can't cover the audio, more clips are needed.
         if target_duration > max_total + 0.05:
             return {
                 "changed": False,
-                "requires_replan": True,
+                "requires_replan_add_segments": True,
                 "audio_duration_seconds": round(audio_duration_seconds, 3),
-                "voiceover_cap_seconds": round(voiceover_cap, 3),
                 "max_available_duration_seconds": round(max_total, 3),
+                "current_segments": segments,
             }
 
-        if abs(target_duration - original_duration) <= 0.25:
-            return {"changed": False}
+        # Extend existing segments to cover audio duration.
+        new_durations = _extend_durations_with_capacity(durations, max_durations, target_duration)
 
         adjusted_plan = dict(remix_plan)
         all_segments = [dict(segment) if isinstance(segment, dict) else segment for segment in remix_plan.get("segments", [])]
@@ -521,24 +506,7 @@ class PipelineExecutorSupportMixin:
             if isinstance(segment, dict)
         }
 
-        kept_segments = segments
-        strategy = "extended"
-        if target_duration < original_duration:
-            keep_count = max(1, min(len(segments), int(target_duration // 1.0)))
-            kept_segments = segments[:keep_count]
-            kept_durations = durations[:keep_count]
-            target_duration = max(float(keep_count), target_duration)
-            new_durations = _scale_durations_with_minimum(kept_durations, target_duration, minimum=1.0)
-            strategy = "compressed" if keep_count == len(segments) else "compressed_removed_tail"
-            kept_ids = {int(segment.get("segment_idx", idx)) for idx, segment in enumerate(kept_segments)}
-            for idx, segment in enumerate(segments):
-                segment_idx = int(segment.get("segment_idx", idx))
-                if segment_idx not in kept_ids and segment_idx in segment_by_idx:
-                    segment_by_idx[segment_idx]["removed"] = True
-        else:
-            new_durations = _extend_durations_with_capacity(durations, max_durations, target_duration)
-
-        for idx, (segment, new_duration) in enumerate(zip(kept_segments, new_durations)):
+        for idx, (segment, new_duration) in enumerate(zip(segments, new_durations)):
             segment_idx = int(segment.get("segment_idx", idx))
             target_segment = segment_by_idx.get(segment_idx)
             if not isinstance(target_segment, dict):
@@ -560,9 +528,8 @@ class PipelineExecutorSupportMixin:
         adjusted_plan["timing_adjustment"] = {
             "original_duration_seconds": round(original_duration, 3),
             "audio_duration_seconds": round(audio_duration_seconds, 3),
-            "voiceover_cap_seconds": round(voiceover_cap, 3),
             "adjusted_duration_seconds": round(adjusted_duration, 3),
-            "strategy": strategy,
+            "strategy": "extended",
         }
         return {"changed": True, "remix_plan": adjusted_plan}
 
@@ -640,6 +607,62 @@ class PipelineExecutorSupportMixin:
             "reason": "voiceover_audio_exceeds_selected_segments",
             "audio_duration_seconds": round(float(audio_duration_seconds), 3),
             "voiceover_cap_seconds": round(voiceover_cap, 3),
+        }
+
+    async def _rerun_remix_planner_add_segments(
+        self,
+        context,
+        input_config: dict[str, Any],
+        audio_duration_seconds: float,
+        current_segments: list[dict],
+    ) -> dict[str, Any]:
+        """Re-run the planner to ADD more video segments so the total video covers
+        the full voiceover audio duration.  The segments already chosen in the first
+        pass are locked-in; only new segments are appended on top of them."""
+        if getattr(self, "remix_planner", None) is None:
+            raise RuntimeError("旁白音频超过已选片段最大可延伸时长，且 remix_planner 未配置，无法补充片段")
+
+        # Build the locked-segment list from the current plan.
+        locked_segments = [
+            (str(seg.get("source_video_id")), int(seg.get("source_shot_idx", -1)))
+            for seg in current_segments
+            if isinstance(seg, dict) and seg.get("source_video_id") is not None
+            and seg.get("source_shot_idx") is not None
+        ]
+
+        adjusted_config = dict(input_config)
+        remix_config = dict(adjusted_config.get("remix_config") or {})
+        remix_config["target_duration_seconds"] = round(float(audio_duration_seconds), 3)
+        adjusted_config["remix_config"] = remix_config
+        adjusted_config["_locked_segments"] = locked_segments
+        feedback = str(adjusted_config.get("remix_adjustment_feedback") or "").strip()
+        auto_feedback = (
+            f"旁白音频共 {audio_duration_seconds:.1f}s，已选片段即使最大延伸也不足以覆盖。"
+            "请在第一轮已选片段的基础上补充新片段，使总时长达到旁白时长。"
+        )
+        adjusted_config["remix_adjustment_feedback"] = f"{feedback}\n{auto_feedback}".strip()
+
+        audio = context.artifacts.get("audio")
+        if isinstance(audio, dict):
+            audio["_reuse_for_audio_aligned_remix"] = True
+            audio["_remix_audio_duration_seconds"] = round(float(audio_duration_seconds), 3)
+
+        result = await self.remix_planner.run(context, adjusted_config)
+        if not result.success:
+            raise RuntimeError(f"Remix Planner failed while adding segments for audio duration: {result.error}")
+        context.artifacts["remix_plan"] = result.output_data.get("remix_plan", {})
+        context.artifacts["remix_planner"] = result.output_data
+        await context.save_checkpoint()
+        await self._update_run(
+            context.pipeline_run_id,
+            status="waiting_remix_confirmation",
+            current_agent="remix_planner",
+            input_config=json.dumps(adjusted_config, ensure_ascii=False),
+        )
+        return {
+            "status": "waiting_remix_confirmation",
+            "reason": "voiceover_audio_needs_more_segments",
+            "audio_duration_seconds": round(float(audio_duration_seconds), 3),
         }
 
     def get_agent_map(self) -> dict[str, object]:
