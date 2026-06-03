@@ -6,6 +6,9 @@
 
 - 最后全量同步时间：`2026-04-23 CST`（UTC+8）。
 - 时间口径说明：以下时间是”文档与代码对齐确认时间”，不是每一处代码首次提交时间。
+- `2026-05-18`：Qwen TTS 接入 instruct 提示词控制。当 `QWEN_TTS_MODEL` 使用 `qwen3-tts-instruct-flash` 等 instruct 模型时，`AudioSubtitleAgent` 会把 `voice_params.tone` 与 `speed` 传入 `TTSService`，`RealTTSService` 会生成短视频口播风格的 `instructions` 并随 Qwen TTS 请求发送；混剪链路也会保留 `audio_design.voice_tone`。音色仍通过官方 `voice_id` 列表选择，不把自然语言音色描述当作新音色。
+- `2026-05-18`：个人仓库的参考视频 uploads 列表改为直接渲染 `<video>` 预览播放器，并使用 `preload="metadata"` 降低列表初始加载成本，不再需要先点击“播放预览”才出现播放器。
+- `2026-05-15`：外部 `/v1/video-jobs` 创建接口补齐混剪提交能力。调用方可使用 Bearer API Key 在同一次 `multipart/form-data` 请求中上传 2 到 20 个 `reference_videos`、可选 `bgm` 音频文件和 `spec.remix_config`；后端自动创建私有项目、写入 `VideoUpload` / 音频 `Material`，并把任务路由到 `remix_planner -> waiting_remix_confirmation -> remix_assembler`。外部审核接口 `/v1/video-jobs/{job_id}/review` 已支持 `remix_plan` 确认或调整后续跑。
 - `2026-05-09`：自动模式聊天框新增失败流程继续命令。当前 `PipelineRun` 为 `failed` 时，用户输入 `continue`、`/continue`、`retry`、`/retry`、`继续` 或 `重试`，前端会直接调用 `/api/projects/{project_id}/pipeline/{run_id}/retry-agent`，重试最近失败的 Agent 并从该阶段继续；`LangGraphPipelineExecutor` 已补齐 `continue_from_retry(...)`，例如音频阶段超时但分镜视频已生成时，会复用已完成的 `video_generator` 输出，重试 `audio_subtitle -> video_editor -> qa_reviewer`。
 - `2026-05-09`：修正最终视频拼接顺序。`VideoEditorService` 不再调用 LLM 重新决定 `ordered_indices`，而是始终使用导演方案 / 视频生成器已经确定的 `shot_idx` 顺序，避免剪辑阶段覆盖 PromptEngineer 或 ReplicationPlanner 的镜头叙事设计。
 - `2026-05-08`：自动模式顶部隐藏调试型 pipeline 参数按钮（时长模式、模型原声、系统配音、转场、BGM、视频生成开关）。这些值改由 `frontend/src/components/pipeline/AutoModeStudio.vue` 中的 `AUTO_PIPELINE_CODE_SWITCHES` 统一控制，界面保留素材 / 参考视频入口、平台、背景模板和视频模型选择。
@@ -64,7 +67,7 @@
 - `手动模式`
   用户按上传、分析、选素材、写提示词、生成、剪辑等步骤逐步完成视频制作。
 - `外部 API 模式`
-  外部客户使用 API Key 调用 `/v1/video-jobs`，一次性提交素材和生成需求；后端复用同一条 pipeline，并通过审核接口继续执行和下载成片。
+  外部客户使用 API Key 调用 `/v1/video-jobs`，一次性提交图片生成、单参考视频复刻或多参考视频混剪素材和生成需求；后端复用同一条 pipeline，并通过审核接口继续执行和下载成片。
 
 ## 2. 总体架构
 
@@ -244,7 +247,7 @@ Router 层负责暴露业务 API，当前主要包含以下路由模块：
 - `repository`
   聚合展示用户上传参考视频、已保存成片，以及由 pipeline Agent 自动保存的 `RepositoryAsset` 中间产物。
 - `public_video_jobs`
-  外部 `/v1/video-jobs` API facade，使用 Bearer API Key 鉴权，一次性上传素材并创建内部项目和 `PipelineRun`，提供状态查询、SSE、审核确认和成片下载。
+  外部 `/v1/video-jobs` API facade，使用 Bearer API Key 鉴权，一次性上传图片、单参考视频或多参考视频混剪素材并创建内部项目和 `PipelineRun`，提供状态查询、SSE、审核确认和成片下载。
 
 ### 4.2 Agent 层
 
@@ -492,7 +495,7 @@ Prompt 层集中管理系统提示词，包括：
 
 ### 6.1 上传参考视频
 
-用户可以上传一段参考视频，系统会为该项目保存上传记录，支持拖拽上传和预览。上传后视频会进入仓库上传记录（`/api/repository/uploads`）并可在自动模式会话中绑定为当前参考视频。仓库 uploads 列表按当前用户聚合展示；从仓库导入到另一个自动模式会话时，`/api/repository/uploads/{upload_id}/import` 会为目标项目 / 会话创建一条可访问的 `VideoUpload` 记录，而不是直接复用旧会话的记录。
+用户可以上传一段参考视频，系统会为该项目保存上传记录，支持拖拽上传和预览。上传后视频会进入仓库上传记录（`/api/repository/uploads`）并可在自动模式会话中绑定为当前参考视频。仓库 uploads 列表按当前用户聚合展示，并直接显示参考视频预览播放器；从仓库导入到另一个自动模式会话时，`/api/repository/uploads/{upload_id}/import` 会为目标项目 / 会话创建一条可访问的 `VideoUpload` 记录，而不是直接复用旧会话的记录。
 
 ### 6.2 视频分析
 
@@ -567,7 +570,7 @@ Talking Head 是一个四步特殊流程设计，目前前后端流程与 Mock �
 - `Qwen（QWEN_OMNI_MODEL）`
   用于结构化规划、提示词生成和编辑决策，支持结构化 JSON Schema 输出；当前默认模型配置为 `qwen3-omni-flash`。
 - `Qwen3 TTS`
-  用于文本转语音和字幕对齐。
+  用于文本转语音和字幕对齐；当配置为 `qwen3-tts-instruct-flash` 等 instruct 模型时，会额外发送由语气与语速生成的 `instructions`，用于控制口播表达方式。
 - `Qwen 多模态 video input`
   当前用于自动模式 `analyze_video` runtime skill 的参考视频解析；实现入口是 `LLMService.generate_text(..., video_paths=[...])` 与 `QwenClient.chat_text(...)`。传统 `Qwen3VLAnalyzer` 类保留在手动分析路由中，但真实调用尚未完成。
 - `Seedance 1.5 Pro`
@@ -734,7 +737,7 @@ Talking Head 是一个四步特殊流程设计，目前前后端流程与 Mock �
 - `PIPELINE_ENGINE`：执行引擎选择（`pipeline` | `langgraph`，默认 `langgraph`）
 - `QWEN_API_KEY` / `QWEN_API_URL`：Qwen 模型服务
 - `QWEN_OMNI_MODEL`：主 LLM / 视觉理解链路使用的模型名（当前默认 `qwen3-omni-flash`）
-- `QWEN_TTS_MODEL`：语音合成模型名（当前默认 `qwen3-tts-flash`）
+- `QWEN_TTS_MODEL`：语音合成模型名（当前默认 `qwen3-tts-flash`；可配置为 `qwen3-tts-instruct-flash` 以启用 `instructions` 语气 / 节奏控制，音色仍需使用模型支持的 `voice_id`）
 - `MEM0_ENABLED` / `MEM0_EMBEDDING_MODEL` / `MEM0_EMBEDDING_DIMS` / `MEM0_SEARCH_LIMIT`：Mem0 语义记忆开关、embedding 模型、向量维度和检索条数。只有 `MEM0_ENABLED=true` 且 `QWEN_API_KEY` 可用时才会初始化；失败会降级为无语义记忆。
 - `KLING_API_KEY` / `WAVESPEED_API_KEY`：视频生成服务
 - `VIDEO_GENERATION_MODEL`：默认视频生成模型选择（`seedance1.5-pro` | `seedance2.0` | `kling`，默认 `seedance1.5-pro`）

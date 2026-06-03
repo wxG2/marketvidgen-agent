@@ -20,10 +20,13 @@ async def ensure_local_file(path_or_url: str, workdir: Optional[str] = None) -> 
             suffix = ".mp4"
         fd, temp_path = tempfile.mkstemp(suffix=suffix, dir=workdir)
         os.close(fd)
-        async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
-            response = await client.get(path_or_url)
-            response.raise_for_status()
-            Path(temp_path).write_bytes(response.content)
+        timeout = httpx.Timeout(connect=30.0, read=600.0, write=60.0, pool=10.0)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            async with client.stream("GET", path_or_url) as response:
+                response.raise_for_status()
+                with open(temp_path, "wb") as f:
+                    async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
+                        f.write(chunk)
         return temp_path
     return path_or_url
 

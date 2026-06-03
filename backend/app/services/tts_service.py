@@ -18,7 +18,13 @@ class TTSResult:
 
 class TTSService(ABC):
     @abstractmethod
-    async def synthesize(self, text: str, voice_id: str, speed: float = 1.0) -> TTSResult:
+    async def synthesize(
+        self,
+        text: str,
+        voice_id: str,
+        speed: float = 1.0,
+        tone: str | None = None,
+    ) -> TTSResult:
         """Generate speech audio from text. Returns audio file path and duration."""
         ...
 
@@ -34,7 +40,13 @@ class MockTTSService(TTSService):
     def __init__(self, output_dir: str = "./data/generated"):
         self.output_dir = output_dir
 
-    async def synthesize(self, text: str, voice_id: str, speed: float = 1.0) -> TTSResult:
+    async def synthesize(
+        self,
+        text: str,
+        voice_id: str,
+        speed: float = 1.0,
+        tone: str | None = None,
+    ) -> TTSResult:
         await asyncio.sleep(2)
 
         os.makedirs(self.output_dir, exist_ok=True)
@@ -90,6 +102,12 @@ class RealTTSService(TTSService):
         "Elias", "Arthur", "Nini", "Ebona", "Seren", "Pip", "Stella",
     }
     DEFAULT_VOICE = "Cherry"
+    TONE_HINTS = {
+        "informative": "清晰专业、可信赖、有讲解感",
+        "narrative": "沉浸叙事、温和、有画面感",
+        "exciting": "明快有活力、带一点兴奋和感染力",
+        "confident": "自信笃定、节奏稳定、有说服力",
+    }
 
     def __init__(self, api_key: str, api_url: str, model: str, output_dir: str = "./data/generated"):
         self.client = QwenClient(api_key=api_key, base_url=api_url, model=model)
@@ -105,16 +123,24 @@ class RealTTSService(TTSService):
                 return v
         return self.DEFAULT_VOICE
 
-    async def synthesize(self, text: str, voice_id: str, speed: float = 1.0) -> TTSResult:
+    async def synthesize(
+        self,
+        text: str,
+        voice_id: str,
+        speed: float = 1.0,
+        tone: str | None = None,
+    ) -> TTSResult:
         os.makedirs(self.output_dir, exist_ok=True)
         raw_path = os.path.join(self.output_dir, f"tts_{uuid.uuid4().hex[:8]}_raw.wav")
         audio_path = os.path.join(self.output_dir, f"tts_{uuid.uuid4().hex[:8]}.mp3")
         resolved_voice = self._resolve_voice(voice_id)
+        instructions = self._build_instructions(tone=tone, speed=speed)
         usage = await self.client.tts(
             text=text,
             voice=resolved_voice,
             output_path=raw_path,
             speed=speed,
+            instructions=instructions,
         )
         # DashScope TTS returns WAV with invalid RIFF size header — browsers can't play it.
         # Convert to MP3 via ffmpeg for browser compatibility and smaller file size.
@@ -127,6 +153,22 @@ class RealTTSService(TTSService):
         except OSError:
             pass
         return TTSResult(audio_path=audio_path, duration_ms=duration_ms, usage=usage)
+
+    @classmethod
+    def _build_instructions(cls, *, tone: str | None, speed: float) -> str:
+        tone_value = (tone or "").strip()
+        tone_text = cls.TONE_HINTS.get(tone_value.lower(), tone_value) if tone_value else "自然、亲切、有感染力"
+        if speed >= 1.15:
+            speed_text = "语速偏快，适合短视频种草节奏，但不要抢话。"
+        elif speed <= 0.9:
+            speed_text = "语速偏慢，停顿更沉稳，适合叙事和品牌质感。"
+        else:
+            speed_text = "语速自然，停顿清晰，节奏适合普通短视频旁白。"
+        return (
+            f"请用{tone_text}的表达方式朗读。"
+            f"{speed_text}"
+            "整体像真实短视频旁白，口语化、吐字清楚、重音自然，避免机械播报感。"
+        )
 
     @staticmethod
     async def _convert_to_mp3(input_path: str, output_path: str) -> int:

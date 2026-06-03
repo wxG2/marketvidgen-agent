@@ -10,8 +10,6 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from app.agents.core.base import AgentContext, AgentResult, BaseAgent
 from app.agents.stages.remix_planner import validate_remix_plan
 from app.core.config import settings
@@ -27,6 +25,13 @@ from app.services.video_editing.helpers import (
     _probe_duration,
     _render_subtitle_overlays,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _str_or_none(v: object) -> str | None:
+    s = str(v).strip() if v else ""
+    return s or None
 
 
 class RemixAssemblerAgent(BaseAgent):
@@ -112,6 +117,7 @@ class RemixAssemblerAgent(BaseAgent):
                         segments,
                         str(voiceover_config.get("voice_id") or "default"),
                         float(voiceover_config.get("voice_speed") or 1.0),
+                        _str_or_none(voiceover_config.get("voice_tone")),
                         temp_dir,
                         source_paths,
                         input_data.get("video_profiles") or [],
@@ -211,21 +217,23 @@ class RemixAssemblerAgent(BaseAgent):
         segments: list[dict],
         voice_id: str,
         speed: float,
+        tone: str | None,
         temp_dir: str,
         source_paths: dict[str, str],  # noqa: ARG002 (reserved for future per-segment path validation)
         video_profiles: list[dict],
     ) -> tuple[str, list[dict]] | None:
         """Generate TTS per segment.  When a segment's TTS audio is longer than
-        the planned video duration, only stretch the segment by a modest amount
-        and insert additional filler shots (from unused source-video shots) after
-        it — so the voiceover plays across the segment + fillers instead of
-        bloating a single clip up to 10s.
+        the planned video duration, draw the next-ranked shots from that
+        segment's candidate pool (same source video first, then other sources by
+        priority) and append them after the segment — so the voiceover plays
+        across the segment + supplementary shots and visuals stay coherent
+        instead of bloating a single clip.
 
         Returns (combined_audio_path, merged_timed_subtitle_segments) for use in
         _apply_voiceover_subtitles, or None if no voiceover texts found.
         """
         # Track which (video_id, shot_idx) the current plan already consumes so we
-        # don't pick fillers that duplicate existing shots.
+        # don't pick supplementary shots that duplicate existing shots.
         used_keys: set[tuple[str, int]] = {
             (str(seg.get("source_video_id")), int(seg.get("source_shot_idx", -1)))
             for seg in segments
@@ -244,7 +252,7 @@ class RemixAssemblerAgent(BaseAgent):
                 i += 1
                 continue
 
-            tts_result = await self.tts_service.synthesize(text=text, voice_id=voice_id, speed=speed)
+            tts_result = await self.tts_service.synthesize(text=text, voice_id=voice_id, speed=speed, tone=tone)
             sub_path = await self.tts_service.generate_subtitles(text=text, audio_path=tts_result.audio_path)
             tts_dur = await _probe_duration(self.ffmpeg_bin, tts_result.audio_path, run_subprocess) or 0.0
             raw_subs = _parse_srt_timed(sub_path) if sub_path and os.path.exists(sub_path) else []
@@ -256,27 +264,45 @@ class RemixAssemblerAgent(BaseAgent):
 
             planned = _segment_duration(segment)
             if tts_dur > planned + 0.05:
-                # Step 1: extend the current segment modestly so visual rhythm stays balanced.
-                modest_cap = min(planned + 1.5, planned * 1.5)
-                segment_dur = min(tts_dur, modest_cap)
-                segment["end_seconds"] = round(float(segment["start_seconds"]) + segment_dur, 3)
-                offset_s += segment_dur
+                # Step 1: cover the TTS overflow by pulling the next-ranked shots
+                # from this segment's candidate pool, in priority order
+                # (vidgen-style: same source video first, then other sources by
+                # priority). The original segment's planned video duration is
+                # preserved; supplementary shots are appended after it.
+                overflow = tts_dur - planned
+                offset_s += planned
 
-                # Step 2: cover remaining overflow with filler shots from unused source material.
-                overflow = tts_dur - segment_dur
                 if overflow > 0.1:
-                    fillers = self._pick_filler_shots(video_profiles, used_keys, overflow)
-                    # Break any transition the original segment had — fillers join with a cut.
-                    if fillers:
+                    supplements = self._pick_candidate_supplements(
+                        segment, video_profiles, used_keys, overflow
+                    )
+                    # Break any transition the original segment had — supplements
+                    # join with a cut to preserve TTS alignment.
+                    if supplements:
                         segment["transition_to_next"] = "cut"
                         segment["transition_duration"] = 0.0
-                    for filler in fillers:
-                        new_seg = self._build_filler_segment(filler)
+
+                    covered = 0.0
+                    for supp in supplements:
+                        new_seg = self._build_supplement_segment(supp)
                         segments.insert(i + 1, new_seg)
                         per_segment_items.append(("", [], 0.0))
-                        used_keys.add((filler["video_id"], filler["shot_idx"]))
-                        offset_s += filler["duration"]
+                        used_keys.add((supp["video_id"], supp["shot_idx"]))
+                        offset_s += supp["duration"]
+                        covered += supp["duration"]
                         i += 1
+
+                    # Fallback: if the candidate pool was exhausted before fully
+                    # covering the overflow, modestly extend the original segment
+                    # to absorb the remaining gap (capped to avoid bloating).
+                    remaining = overflow - covered
+                    if remaining > 0.1:
+                        modest_extra = min(remaining, max(1.5, planned * 0.5))
+                        new_end = round(
+                            float(segment["start_seconds"]) + planned + modest_extra, 3
+                        )
+                        segment["end_seconds"] = new_end
+                        offset_s += modest_extra
             else:
                 offset_s += planned
 
@@ -327,49 +353,99 @@ class RemixAssemblerAgent(BaseAgent):
         return combined_path, merged_subs
 
     @staticmethod
-    def _pick_filler_shots(
+    def _pick_candidate_supplements(
+        segment: dict,
         video_profiles: list[dict],
         used_keys: set[tuple[str, int]],
         overflow: float,
     ) -> list[dict]:
-        """Return a list of unused shots totalling at least `overflow` seconds.
-        Greedy: pick by descending duration to minimise the number of extra cuts."""
-        candidates: list[dict] = []
+        """Return the next-ranked shots from the segment's candidate pool, in
+        priority order, until cumulative duration is at least ``overflow`` seconds.
+
+        Vidgen-style ranking: prefer shots from the same source video as the
+        current segment (so visual continuity is preserved), and within that
+        source the next shots after ``source_shot_idx`` come first; then any
+        earlier unused shots in the same source; then shots from other source
+        videos ranked by descending quality/scene-change score. Shots already
+        consumed by the plan (``used_keys``) are skipped. Returns an empty list
+        when the pool is exhausted before covering the overflow.
+        """
+        if overflow <= 0:
+            return []
+
+        current_video_id = str(segment.get("source_video_id") or "")
+        current_shot_idx = int(segment.get("source_shot_idx", -1))
+
+        def _shot_to_supplement(shot: dict) -> dict:
+            return {
+                "video_id": str(shot.get("video_id")),
+                "shot_idx": int(shot.get("shot_idx", -1)),
+                "start_seconds": float(shot.get("start_seconds") or 0),
+                "end_seconds": float(shot.get("end_seconds") or 0),
+                "duration": float(shot.get("duration_seconds") or 0),
+            }
+
+        def _shot_score(shot: dict) -> float:
+            quality = float(shot.get("visual_quality_score") or 0.0)
+            scene = float(shot.get("scene_change_score") or 0.0)
+            # Mirrors remix_planner._shot_priority_score weighting (quality dominates).
+            return quality * 2.0 + max(scene, 0.0) * 0.5
+
+        same_source_after: list[dict] = []
+        same_source_before: list[dict] = []
+        other_sources: list[dict] = []
         for profile in video_profiles or []:
             for shot in profile.get("shots") or []:
-                key = (str(shot.get("video_id")), int(shot.get("shot_idx", -1)))
+                vid = str(shot.get("video_id"))
+                sidx = int(shot.get("shot_idx", -1))
+                key = (vid, sidx)
                 if key in used_keys:
                     continue
                 dur = float(shot.get("duration_seconds") or 0)
                 if dur < 1.0:
                     continue
-                candidates.append({
-                    "video_id": str(shot.get("video_id")),
-                    "shot_idx": int(shot.get("shot_idx", -1)),
-                    "start_seconds": float(shot.get("start_seconds") or 0),
-                    "end_seconds": float(shot.get("end_seconds") or 0),
-                    "duration": dur,
-                })
-        candidates.sort(key=lambda x: x["duration"], reverse=True)
-        fillers: list[dict] = []
+                if vid == current_video_id and current_shot_idx >= 0:
+                    if sidx > current_shot_idx:
+                        same_source_after.append(shot)
+                    else:
+                        same_source_before.append(shot)
+                else:
+                    other_sources.append(shot)
+
+        # Same-source-after: original narrative order (nearest neighbour first).
+        same_source_after.sort(key=lambda s: int(s.get("shot_idx", 0)))
+        # Same-source-before: also narrative order, closest to the current cut.
+        same_source_before.sort(
+            key=lambda s: abs(int(s.get("shot_idx", 0)) - current_shot_idx)
+        )
+        # Other sources: descending vidgen-style priority score, ties broken by duration.
+        other_sources.sort(
+            key=lambda s: (_shot_score(s), float(s.get("duration_seconds") or 0)),
+            reverse=True,
+        )
+
+        ranked_pool = same_source_after + same_source_before + other_sources
+
+        picked: list[dict] = []
         remaining = overflow
-        for c in candidates:
+        for shot in ranked_pool:
             if remaining <= 0:
                 break
-            fillers.append(c)
-            remaining -= c["duration"]
-        return fillers
+            supp = _shot_to_supplement(shot)
+            picked.append(supp)
+            remaining -= supp["duration"]
+        return picked
 
     @staticmethod
-    def _build_filler_segment(filler: dict) -> dict:
-        """Build a segment dict for a filler shot (no voiceover)."""
+    def _build_supplement_segment(supplement: dict) -> dict:
+        """Build a segment dict for a supplementary candidate shot (no voiceover)."""
         return {
             "segment_idx": 0,  # renumbered after the TTS loop
-            "source_video_id": filler["video_id"],
-            "source_shot_idx": filler["shot_idx"],
-            "start_seconds": round(filler["start_seconds"], 3),
-            "end_seconds": round(filler["end_seconds"], 3),
-            "description": "补片：填充旁白溢出时长",
+            "source_video_id": supplement["video_id"],
+            "source_shot_idx": supplement["shot_idx"],
+            "start_seconds": round(supplement["start_seconds"], 3),
+            "end_seconds": round(supplement["end_seconds"], 3),
+            "description": "候选补片：覆盖旁白溢出时长",
             "narrative_role": "buildup",
             "emotion_tag": "neutral",
             "transition_to_next": "cut",
@@ -559,6 +635,7 @@ class RemixAssemblerAgent(BaseAgent):
             "voiceover_script": remix_config.get("voiceover_script") or input_config.get("voiceover_script") or "",
             "voice_id": input_config.get("voice_id") or remix_config.get("voice_id") or audio_design.get("voice_id") or "default",
             "voice_speed": audio_design.get("voice_speed") or input_config.get("voice_speed") or 1.0,
+            "voice_tone": audio_design.get("voice_tone") or input_config.get("voice_tone") or audio_design.get("tone") or input_config.get("tone"),
         }
 
     async def _build_per_segment_voiceover(
@@ -566,6 +643,7 @@ class RemixAssemblerAgent(BaseAgent):
         segments: list[dict],
         voice_id: str,
         speed: float,
+        tone: str | None,
         temp_dir: str,
     ) -> tuple[str, list[dict]]:
         """Generate per-segment TTS audio and merge them with adelay positioning.
@@ -580,7 +658,7 @@ class RemixAssemblerAgent(BaseAgent):
             text = str(segment.get("voiceover") or segment.get("script_segment") or segment.get("narration") or "").strip()
             seg_duration = _segment_duration(segment)
             if text:
-                tts_result = await self.tts_service.synthesize(text=text, voice_id=voice_id, speed=speed)
+                tts_result = await self.tts_service.synthesize(text=text, voice_id=voice_id, speed=speed, tone=tone)
                 sub_path = await self.tts_service.generate_subtitles(text=text, audio_path=tts_result.audio_path)
                 raw_subs = _parse_srt_timed(sub_path) if sub_path and os.path.exists(sub_path) else []
                 offset_subs = [
@@ -648,6 +726,7 @@ class RemixAssemblerAgent(BaseAgent):
         try:
             voice_id = str(input_config.get("voice_id") or "default")
             speed = float(input_config.get("voice_speed") or input_config.get("speed") or 1.0)
+            tone = _str_or_none(input_config.get("voice_tone") or input_config.get("tone"))
 
             if pre_generated_voiceover is not None:
                 # Use TTS that was pre-generated before clip extraction (best alignment).
@@ -661,7 +740,7 @@ class RemixAssemblerAgent(BaseAgent):
             ) and self.tts_service is not None:
                 per_seg_temp = tempfile.mkdtemp(prefix="vidgen_remix_vo_")
                 audio_path, timed_segments = await self._build_per_segment_voiceover(
-                    segments, voice_id, speed, per_seg_temp
+                    segments, voice_id, speed, tone, per_seg_temp
                 )
                 if not audio_path:
                     shutil.copy2(input_path, output_path)
@@ -675,7 +754,7 @@ class RemixAssemblerAgent(BaseAgent):
                     if not script:
                         shutil.copy2(input_path, output_path)
                         return output_path
-                    tts_result = await self.tts_service.synthesize(text=script, voice_id=voice_id, speed=speed)
+                    tts_result = await self.tts_service.synthesize(text=script, voice_id=voice_id, speed=speed, tone=tone)
                     audio_path = tts_result.audio_path
                     subtitle_path = await self.tts_service.generate_subtitles(text=script, audio_path=audio_path)
 

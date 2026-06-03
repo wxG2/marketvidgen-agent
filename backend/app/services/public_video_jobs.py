@@ -104,6 +104,65 @@ def _remix_plan_review(snapshot: dict[str, Any]) -> dict[str, Any]:
     return _scrub_review_data(remix_plan if isinstance(remix_plan, dict) else {})
 
 
+async def _save_reference_video_upload(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    project_id: str,
+    file: UploadFile,
+) -> str:
+    validated = await validate_upload_file(file, kind="video")
+    upload_dir = Path(settings.VIDEO_REPOSITORY_DIR) / "uploads" / user_id / project_id
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = f"{uuid.uuid4()}_{validated.filename}"
+    file_path = upload_dir / safe_name
+    file_path.write_bytes(validated.content)
+    upload = VideoUpload(
+        project_id=project_id,
+        filename=validated.filename,
+        file_path=str(file_path),
+        file_size=validated.file_size,
+        mime_type=validated.content_type,
+    )
+    db.add(upload)
+    await db.flush()
+    return upload.id
+
+
+async def _save_bgm_material(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    project_id: str,
+    file: UploadFile,
+) -> str:
+    validated = await validate_upload_file(file, kind="audio")
+    material = await index_uploaded_file(
+        db,
+        settings.MATERIALS_ROOT,
+        user_id,
+        f"api-job-{project_id}-audio",
+        f"bgm_{validated.filename}",
+        validated.content,
+    )
+    if material is None:
+        raise HTTPException(status_code=400, detail=f"Unsupported BGM file: {validated.filename}")
+    await db.flush()
+    return material.id
+
+
+def _public_remix_config(spec: PublicVideoJobSpec, *, bgm_material_id: str | None) -> dict[str, Any]:
+    config = spec.remix_config.model_dump(exclude_none=True) if spec.remix_config is not None else {}
+    config.setdefault("target_duration_seconds", spec.duration_seconds)
+    config.setdefault("bgm_mood", spec.bgm_mood if spec.bgm_mood != "none" else "cinematic")
+    config.setdefault("bgm_volume", spec.bgm_volume)
+    config.setdefault("include_source_audio", not spec.video_model_no_audio)
+    config.setdefault("add_voiceover", not spec.voiceover_no_audio)
+    if bgm_material_id:
+        config["bgm_material_id"] = bgm_material_id
+    return config
+
+
 def build_public_job_response(job: ExternalVideoJob, run: PipelineRun) -> PublicVideoJobResponse:
     status = _external_status(run.status)
     snapshot = _load_json(run.artifacts_snapshot)
@@ -153,6 +212,8 @@ async def create_public_video_job(
     spec: PublicVideoJobSpec,
     image_files: list[UploadFile],
     reference_video: UploadFile | None,
+    reference_videos: list[UploadFile],
+    bgm: UploadFile | None,
     watermark: UploadFile | None,
     idempotency_key: str | None,
     memory_service=None,
@@ -175,10 +236,22 @@ async def create_public_video_job(
                 raise HTTPException(status_code=404, detail="Existing video job is missing its pipeline run")
             return existing_job, existing_run, False
 
-    if not image_files:
+    reference_video_files = []
+    if reference_video is not None:
+        reference_video_files.append(reference_video)
+    reference_video_files.extend(reference_videos or [])
+    is_remix = len(reference_video_files) >= 2
+    if spec.remix_config is not None and not is_remix:
+        raise HTTPException(status_code=400, detail="remix_config requires at least two reference_videos")
+    if bgm is not None and not is_remix:
+        raise HTTPException(status_code=400, detail="bgm upload is only supported for remix jobs")
+
+    if not image_files and not is_remix:
         raise HTTPException(status_code=400, detail="At least one image is required")
     if len(image_files) > 100:
         raise HTTPException(status_code=400, detail="At most 100 images are allowed")
+    if len(reference_video_files) > 20:
+        raise HTTPException(status_code=400, detail="At most 20 reference videos are allowed")
 
     project_label = spec.client_reference_id or _utcnow().strftime("%Y%m%d-%H%M%S")
     project = Project(name=f"API Job {project_label}", user_id=context.user.id)
@@ -218,24 +291,25 @@ async def create_public_video_job(
             watermark_image_id = material.id
             watermark_path = str((Path(settings.MATERIALS_ROOT) / material.file_path).resolve())
 
-    reference_video_id = None
-    if reference_video is not None:
-        validated = await validate_upload_file(reference_video, kind="video")
-        upload_dir = Path(settings.VIDEO_REPOSITORY_DIR) / "uploads" / context.user.id / project.id
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = f"{uuid.uuid4()}_{validated.filename}"
-        file_path = upload_dir / safe_name
-        file_path.write_bytes(validated.content)
-        upload = VideoUpload(
-            project_id=project.id,
-            filename=validated.filename,
-            file_path=str(file_path),
-            file_size=validated.file_size,
-            mime_type=validated.content_type,
+    reference_video_ids: list[str] = []
+    for file in reference_video_files:
+        reference_video_ids.append(
+            await _save_reference_video_upload(
+                db,
+                user_id=context.user.id,
+                project_id=project.id,
+                file=file,
+            )
         )
-        db.add(upload)
-        await db.flush()
-        reference_video_id = upload.id
+
+    bgm_material_id = None
+    if bgm is not None:
+        bgm_material_id = await _save_bgm_material(
+            db,
+            user_id=context.user.id,
+            project_id=project.id,
+            file=bgm,
+        )
 
     input_config: dict[str, Any] = {
         "script": spec.script.strip(),
@@ -259,8 +333,11 @@ async def create_public_video_job(
     }
     if watermark_path:
         input_config["watermark_path"] = watermark_path
-    if reference_video_id:
-        input_config["reference_video_id"] = reference_video_id
+    if reference_video_ids:
+        input_config["reference_video_id"] = reference_video_ids[0]
+    if is_remix:
+        input_config["reference_video_ids"] = reference_video_ids
+        input_config["remix_config"] = _public_remix_config(spec, bgm_material_id=bgm_material_id)
 
     run = PipelineRun(
         user_id=context.user.id,

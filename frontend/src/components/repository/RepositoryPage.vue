@@ -26,7 +26,6 @@ const categories = ref<MaterialCategory[]>([])
 const activeCategory = ref('')
 const materials = ref<MaterialItem[]>([])
 const loading = ref(false)
-const playingUploadId = ref<string | null>(null)
 const playingDeliveryId = ref<string | null>(null)
 const selectedItems = ref<Map<string, MaterialItem>>(new Map())
 const selectedUploads = ref<Map<string, RepositoryUpload>>(new Map())
@@ -351,10 +350,7 @@ watch(activeCategory, refreshMaterials)
                 </div>
                 <input v-if="pickerMode" type="checkbox" :checked="selectedUploads.has(upload.id)" @change="toggleUpload(upload)">
               </div>
-              <video v-if="playingUploadId === upload.id" class="h-52 w-full rounded-lg bg-black object-contain" controls :src="upload.stream_url" />
-              <button v-else type="button" class="flex h-52 w-full items-center justify-center rounded-lg bg-[#f2e8d6] text-sm text-[#6d5936]" @click="playingUploadId = upload.id">
-                播放预览
-              </button>
+              <video class="h-52 w-full rounded-lg bg-black object-contain" controls preload="metadata" :src="upload.stream_url" />
               <div class="mt-3 flex items-center justify-between">
                 <span class="text-xs text-[#8a7857]">{{ formatDate(upload.created_at) }}</span>
                 <button v-if="!pickerMode" type="button" class="rounded-lg border border-[#d7c7a8] px-3 py-1.5 text-xs hover:bg-[#f4ead8]" @click="removeUpload(upload)">

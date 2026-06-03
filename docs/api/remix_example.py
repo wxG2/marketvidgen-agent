@@ -1,29 +1,18 @@
 """
 混剪功能 API 调用示例
 =====================
-演示如何通过 REST API 完成一次完整的多视频混剪：
-  1. 上传参考视频（×N）
-  2. 上传 BGM 音频素材
-  3. 创建混剪任务
-  4. 轮询状态 / 自动确认镜头方案
-  5. 下载成片
+
+调用逻辑与 docs/api/api.py 保持一致：
+  1. 使用 Authorization: Bearer vg_xxx 鉴权
+  2. POST /v1/video-jobs 创建任务
+  3. GET /v1/video-jobs/{job_id} 轮询状态
+  4. POST /v1/video-jobs/{job_id}/review 自动确认混剪方案
+  5. GET /v1/video-jobs/{job_id}/result 下载成片
 
 依赖：pip install requests
-
-用法示例：
-  python remix_example.py \\
-    --video video1.mp4 video2.mp4 \\
-    --bgm background.mp3 \\
-    --output result.mp4 \\
-    --duration 18
-
-配置（优先级：命令行参数 > 环境变量 > 脚本内默认值）：
-  VIDGEN_BASE_URL   API 地址，例如 https://your-api-domain.com
-  VIDGEN_API_KEY    Bearer Token
-  VIDGEN_PROJECT_ID 项目 ID
 """
 
-import argparse
+import json
 import mimetypes
 import os
 import time
@@ -31,265 +20,156 @@ from pathlib import Path
 
 import requests
 
-# ── 默认配置（可通过环境变量覆盖） ────────────────────────────────────────────
-DEFAULT_BASE_URL   = os.environ.get("VIDGEN_BASE_URL",   "https://wing-beyond-viking-str.trycloudflare.com")
-DEFAULT_API_KEY    = os.environ.get("VIDGEN_API_KEY",    "vg_G3WSPfyhwATJ_HAu9lxo0W54OvCZIFENN_nxjJErjzI")
-DEFAULT_PROJECT_ID = os.environ.get("VIDGEN_PROJECT_ID", "your-project-id")
+
+# VidGen API 服务地址。优先读取环境变量 VIDGEN_BASE_URL；
+BASE_URL = os.getenv("VIDGEN_BASE_URL", "https://wing-beyond-viking-str.trycloudflare.com")
+if not BASE_URL:
+    raise RuntimeError("请先设置 VIDGEN_BASE_URL，例如 https://api.yourdomain.com")
+
+# VidGen API Key。优先读取环境变量 VIDGEN_API_KEY；
+API_KEY = os.getenv("VIDGEN_API_KEY", "vg_G3WSPfyhwATJ_HAu9lxo0W54OvCZIFENN_nxjJErjzI")
+if not API_KEY or API_KEY == "vg_xxx":
+    raise RuntimeError("请先设置 VIDGEN_API_KEY")
+
+BASE_URL = BASE_URL.strip().rstrip("/")
+USE_ENV_PROXY = os.getenv("VIDGEN_USE_ENV_PROXY", "").lower() in {"1", "true", "yes"}
+
+HTTP = requests.Session()
+HTTP.trust_env = USE_ENV_PROXY
+
+REFERENCE_VIDEO_PATHS = [
+    "./video1.mp4",  # 必填：第 1 个参考视频本地路径，支持 mp4/mov/webm/avi
+    "./video2.mp4",  # 必填：第 2 个参考视频本地路径，混剪至少需要 2 个视频
+    # "./video3.mp4",  # 可选：可以继续追加更多参考视频，最多 20 个
+]
+
+# 可选：BGM 音频文件本地路径，支持 mp3/wav/aac/flac/ogg/m4a/webm。
+# 如果暂时不想传 BGM，可以把 BGM_PATH 设为 None。
+BGM_PATH = "./background.mp3"
+
+# 下载后的成片保存路径。
+OUTPUT_PATH = "remix_result.mp4"
+
+for video_path in REFERENCE_VIDEO_PATHS:
+    path = Path(video_path)
+    if not path.exists():
+        raise FileNotFoundError(f"参考视频不存在: {path.resolve()}")
+
+bgm_path = Path(BGM_PATH) if BGM_PATH else None
+if bgm_path is not None and not bgm_path.exists():
+    raise FileNotFoundError(f"BGM 文件不存在: {bgm_path.resolve()}")
+
+SPEC = {
+    "prompt": "请基于这些参考视频做一条节奏感强的抖音混剪短片", #  必填：混剪创作要求。调用方通常只需要改这一项和上面的视频/BGM 文件路径。
+    "client_reference_id": f"remix-{int(time.time())}",
+}
 
 
-# ── 工具函数 ──────────────────────────────────────────────────────────────────
-def auth_headers(api_key: str, extra: dict | None = None) -> dict:
-    headers = {"Authorization": f"Bearer {api_key}"}
+def auth_headers(extra=None):
+    headers = {"Authorization": f"Bearer {API_KEY}"}
     if extra:
         headers.update(extra)
     return headers
 
 
-# ── Step 1: 上传参考视频 ───────────────────────────────────────────────────────
-def upload_reference_video(base_url: str, api_key: str, project_id: str, video_path: str) -> str:
-    """上传一个参考视频，返回 video_upload_id。每个视频单独调用一次。"""
-    path = Path(video_path)
-    content_type = mimetypes.guess_type(path.name)[0] or "video/mp4"
-    with path.open("rb") as f:
-        resp = requests.post(
-            f"{base_url}/api/projects/{project_id}/upload",
-            headers=auth_headers(api_key),
-            files={"file": (path.name, f, content_type)},
-            timeout=300,
-        )
-    resp.raise_for_status()
-    video_id = resp.json()["id"]
-    print(f"  上传视频: {path.name} → id={video_id}")
-    return video_id
+def create_video_job():
+    url = f"{BASE_URL}/v1/video-jobs"
 
+    files = []
+    opened_files = []
 
-# ── Step 2: 上传 BGM 音频素材 ─────────────────────────────────────────────────
-def upload_bgm(base_url: str, api_key: str, project_id: str, bgm_path: str) -> str:
-    """上传 BGM 音频素材，返回 material_id。"""
-    path = Path(bgm_path)
-    content_type = mimetypes.guess_type(path.name)[0] or "audio/mpeg"
-    with path.open("rb") as f:
-        resp = requests.post(
-            f"{base_url}/api/projects/{project_id}/materials/upload",
-            headers=auth_headers(api_key),
-            files={"files": (path.name, f, content_type)},
-            data={"auto_select": "true"},
+    try:
+        for video_path in REFERENCE_VIDEO_PATHS:
+            path = Path(video_path)
+            content_type = mimetypes.guess_type(path.name)[0] or "video/mp4"
+            file_obj = path.open("rb")
+            opened_files.append(file_obj)
+            files.append(("reference_videos", (path.name, file_obj, content_type)))
+
+        if bgm_path is not None:
+            bgm_content_type = mimetypes.guess_type(bgm_path.name)[0] or "audio/mpeg"
+            bgm_file = bgm_path.open("rb")
+            opened_files.append(bgm_file)
+            files.append(("bgm", (bgm_path.name, bgm_file, bgm_content_type)))
+
+        response = HTTP.post(
+            url,
+            headers=auth_headers({"Idempotency-Key": SPEC["client_reference_id"]}),
+            data={"spec": json.dumps(SPEC, ensure_ascii=False)},
+            files=files,
             timeout=120,
         )
-    resp.raise_for_status()
-    items = resp.json().get("items") or []
-    if not items:
-        raise RuntimeError("BGM 上传失败：接口未返回 material id")
-    material_id = items[0]["id"]
-    print(f"  上传 BGM: {path.name} → id={material_id}")
-    return material_id
+        response.raise_for_status()
+        return response.json()
+
+    finally:
+        for file_obj in opened_files:
+            file_obj.close()
 
 
-# ── Step 3: 创建混剪任务 ───────────────────────────────────────────────────────
-def create_remix_run(
-    base_url: str,
-    api_key: str,
-    project_id: str,
-    reference_video_ids: list[str],
-    bgm_material_id: str,
-    duration_seconds: int = 18,
-    script: str = "",
-    add_voiceover: bool = True,
-) -> str:
-    """
-    发起混剪流水线，返回 run_id。
-    reference_video_ids 传 ≥2 个时自动进入混剪模式。
-    """
-    payload = {
-        "script": script,
-        "reference_video_ids": reference_video_ids,
-        "platform": "douyin",
-        "remix_config": {
-            "target_duration_seconds": duration_seconds,
-            "bgm_material_id": bgm_material_id,
-            "bgm_volume": 0.2,
-            "bgm_mood": "cinematic",
-            "add_voiceover": add_voiceover,
-            "voiceover_script": None,           # None=AI 自动撰写
-        },
-        "voiceover_no_audio": not add_voiceover,
-        "transition": "fade",
-        "transition_duration": 0.4,
-    }
-    resp = requests.post(
-        f"{base_url}/api/projects/{project_id}/pipeline",
-        headers=auth_headers(api_key),
-        json=payload,
-        timeout=60,
-    )
-    resp.raise_for_status()
-    run_id = resp.json()["id"]
-    print(f"  创建混剪任务 → run_id={run_id}")
-    return run_id
-
-
-# ── Step 4: 查询任务状态 ───────────────────────────────────────────────────────
-def get_run(base_url: str, api_key: str, project_id: str, run_id: str) -> dict:
-    resp = requests.get(
-        f"{base_url}/api/projects/{project_id}/pipeline/{run_id}",
-        headers=auth_headers(api_key),
+def get_video_job(job_id):
+    response = HTTP.get(
+        f"{BASE_URL}/v1/video-jobs/{job_id}",
+        headers=auth_headers(),
         timeout=30,
     )
-    resp.raise_for_status()
-    return resp.json()
+    response.raise_for_status()
+    return response.json()
 
 
-# ── Step 5: 确认镜头方案 ───────────────────────────────────────────────────────
-def confirm_remix_plan(
-    base_url: str,
-    api_key: str,
-    project_id: str,
-    run_id: str,
-    approved: bool = True,
-    adjustments: str | None = None,
-) -> dict:
-    """
-    当任务状态为 waiting_remix_confirmation 时调用。
-      approved=True  → 直接开始合成
-      approved=False → 拒绝，附上文字意见后系统重新规划
-    """
-    payload: dict = {"approved": approved, "edited_segments": []}
-    if adjustments:
-        payload["adjustments"] = adjustments
-    resp = requests.post(
-        f"{base_url}/api/projects/{project_id}/pipeline/{run_id}/confirm-remix",
-        headers=auth_headers(api_key),
-        json=payload,
+def approve_review(job_id):
+    response = HTTP.post(
+        f"{BASE_URL}/v1/video-jobs/{job_id}/review",
+        headers=auth_headers({"Content-Type": "application/json"}),
+        json={"approved": True},
         timeout=60,
     )
-    resp.raise_for_status()
-    return resp.json()
+    response.raise_for_status()
+    return response.json()
 
 
-# ── Step 6: 下载成片 ──────────────────────────────────────────────────────────
-def download_final_video(
-    base_url: str,
-    api_key: str,
-    project_id: str,
-    run_id: str,
-    output_path: str = "remix_output.mp4",
-) -> str:
-    resp = requests.get(
-        f"{base_url}/api/projects/{project_id}/pipeline/{run_id}/final-video",
-        headers=auth_headers(api_key),
+def download_result(job_id, output_path=OUTPUT_PATH):
+    response = HTTP.get(
+        f"{BASE_URL}/v1/video-jobs/{job_id}/result",
+        headers=auth_headers(),
         stream=True,
         timeout=300,
     )
-    resp.raise_for_status()
+    response.raise_for_status()
+
     with open(output_path, "wb") as f:
-        for chunk in resp.iter_content(chunk_size=1024 * 1024):
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
             if chunk:
                 f.write(chunk)
-    print(f"  成片已下载 → {output_path}")
+
     return output_path
 
 
-# ── 主流程 ────────────────────────────────────────────────────────────────────
-def run_remix(
-    video_paths: list[str],
-    bgm_path: str,
-    output_path: str = "remix_output.mp4",
-    duration_seconds: int = 18,
-    script: str = "",
-    add_voiceover: bool = True,
-    base_url: str = DEFAULT_BASE_URL,
-    api_key: str = DEFAULT_API_KEY,
-    project_id: str = DEFAULT_PROJECT_ID,
-    poll_interval: int = 5,
-) -> str:
-    """
-    完整混剪流程，返回本地成片路径。
-
-    参数:
-        video_paths      参考视频本地路径列表（≥2 个）
-        bgm_path         BGM 音频本地路径
-        output_path      成片保存路径
-        duration_seconds 目标时长（秒），建议与 BGM 时长一致
-        script           创作方向说明（可为空）
-        add_voiceover    是否生成 AI 旁白
-        base_url         API 服务地址
-        api_key          Bearer Token
-        project_id       项目 ID
-        poll_interval    轮询间隔（秒）
-    """
-    if len(video_paths) < 2:
-        raise ValueError("至少需要 2 个参考视频才能进入混剪模式")
-
-    base_url = base_url.strip().rstrip("/")
-
-    print("=== Step 1: 上传参考视频 ===")
-    video_ids = [upload_reference_video(base_url, api_key, project_id, p) for p in video_paths]
-
-    print("=== Step 2: 上传 BGM ===")
-    bgm_id = upload_bgm(base_url, api_key, project_id, bgm_path)
-
-    print("=== Step 3: 创建混剪任务 ===")
-    run_id = create_remix_run(
-        base_url, api_key, project_id,
-        video_ids, bgm_id,
-        duration_seconds=duration_seconds,
-        script=script,
-        add_voiceover=add_voiceover,
-    )
-
-    print("=== Step 4/5: 轮询状态 & 确认方案 ===")
-    confirmed_once = False
-    while True:
-        run = get_run(base_url, api_key, project_id, run_id)
-        status = run["status"]
-        agent  = run.get("current_agent", "-")
-        print(f"  status={status}  agent={agent}")
-
-        if status == "waiting_remix_confirmation" and not confirmed_once:
-            # 可通过 run["review"]["data"]["segments"] 查看镜头方案后再决策
-            print("  → 镜头方案待确认，自动批准…")
-            result = confirm_remix_plan(base_url, api_key, project_id, run_id, approved=True)
-            print("  确认结果:", result)
-            confirmed_once = True
-
-        elif status == "completed":
-            print("=== Step 6: 下载成片 ===")
-            return download_final_video(base_url, api_key, project_id, run_id, output_path)
-
-        elif status in {"failed", "cancelled"}:
-            raise RuntimeError(
-                f"任务结束，status={status}，error={run.get('error_message')}"
-            )
-
-        time.sleep(poll_interval)
-
-
-# ── CLI 入口 ──────────────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="多视频混剪 API 调用示例")
-    parser.add_argument("--video",    nargs="+", required=True, metavar="PATH",  help="参考视频路径（至少 2 个）")
-    parser.add_argument("--bgm",      required=True,            metavar="PATH",  help="BGM 音频路径")
-    parser.add_argument("--output",   default="remix_output.mp4",               help="成片保存路径（默认 remix_output.mp4）")
-    parser.add_argument("--duration", type=int, default=18,                      help="目标时长秒数（默认 18）")
-    parser.add_argument("--script",   default="",                                help="创作方向说明（可选）")
-    parser.add_argument("--no-voiceover", action="store_true",                   help="不生成 AI 旁白，纯 BGM 模式")
-    parser.add_argument("--base-url", default=DEFAULT_BASE_URL,                  help="API 地址（也可用 VIDGEN_BASE_URL 环境变量）")
-    parser.add_argument("--api-key",  default=DEFAULT_API_KEY,                   help="Bearer Token（也可用 VIDGEN_API_KEY 环境变量）")
-    parser.add_argument("--project",  default=DEFAULT_PROJECT_ID,                help="项目 ID（也可用 VIDGEN_PROJECT_ID 环境变量）")
-    args = parser.parse_args()
+    print("BASE_URL:", BASE_URL)
+    print("Use system proxy:", USE_ENV_PROXY)
+    created = create_video_job()
+    job_id = created["job_id"]
+    print("Created remix job:", json.dumps(created, ensure_ascii=False, indent=2))
 
-    output = run_remix(
-        video_paths=args.video,
-        bgm_path=args.bgm,
-        output_path=args.output,
-        duration_seconds=args.duration,
-        script=args.script,
-        add_voiceover=not args.no_voiceover,
-        base_url=args.base_url,
-        api_key=args.api_key,
-        project_id=args.project,
-    )
-    print(f"\n✅ 混剪完成：{output}")
+    while True:
+        job = get_video_job(job_id)
+        print("Current status:", job["status"], "agent:", job.get("current_agent"))
+
+        if job["status"] == "requires_review":
+            print("Review required:", job["review"]["type"])
+            reviewed = approve_review(job_id)
+            print("Review response:", reviewed)
+
+        elif job["status"] == "completed":
+            output_path = download_result(job_id)
+            print("Downloaded:", output_path)
+            break
+
+        elif job["status"] in {"failed", "cancelled"}:
+            raise RuntimeError(f"Job ended with status={job['status']}, error={job.get('error')}")
+
+        time.sleep(5)
 
 
 if __name__ == "__main__":

@@ -100,7 +100,7 @@ class QwenClient:
         image_paths: Optional[list[str]] = None,
         video_paths: Optional[list[str]] = None,
         response_schema: Optional[dict[str, Any]] = None,
-        temperature: float = 0.2,
+        temperature: float = 0.7,
     ) -> tuple[dict[str, Any], dict[str, int]]:
         content: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
         for image_path in image_paths or []:
@@ -193,15 +193,28 @@ class QwenClient:
         voice: str,
         output_path: str,
         speed: float = 1.0,
+        instructions: Optional[str] = None,
         model: Optional[str] = None,
     ) -> dict[str, int]:
+        model_name = model or self.model
+        input_payload = {
+            "text": text,
+            "voice": voice,
+            "language_type": "Chinese",
+        }
+        if instructions and "instruct" in model_name.lower():
+            input_payload["instructions"] = instructions
+            # Keep ``optimize_instructions=False`` so DashScope does not re-shape
+            # voice characteristics on a per-request basis. When enabled, the
+            # service randomises tone/timbre per call, which produces audible
+            # voice inconsistency across the per-segment TTS used in remix
+            # assembly. With it disabled, identical (voice, instructions, speed)
+            # inputs yield consistent voice across all segments of one job.
+            input_payload["optimize_instructions"] = False
+
         payload = {
-            "model": model or self.model,
-            "input": {
-                "text": text,
-                "voice": voice,
-                "language_type": "Chinese",
-            },
+            "model": model_name,
+            "input": input_payload,
         }
 
         async with httpx.AsyncClient(timeout=180) as client:

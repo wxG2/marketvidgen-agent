@@ -40,6 +40,15 @@ class AdminApiKeyCreateResponse(AdminApiKeyResponse):
     api_key: str
 
 
+class PublicRemixConfig(BaseModel):
+    target_duration_seconds: Optional[float] = Field(default=None, ge=1, le=300)
+    bgm_mood: Literal["none", "upbeat", "calm", "cinematic", "energetic"] = "cinematic"
+    bgm_volume: float = Field(default=0.15, ge=0, le=1)
+    include_source_audio: bool = False
+    add_voiceover: bool = True
+    voiceover_script: Optional[str] = Field(default=None, max_length=8000)
+
+
 class PublicVideoJobSpec(BaseModel):
     prompt: str = Field(default="", max_length=8000)
     script: str = Field(default="", max_length=8000)
@@ -56,6 +65,7 @@ class PublicVideoJobSpec(BaseModel):
     bgm_mood: Literal["none", "upbeat", "calm", "cinematic", "energetic"] = "none"
     bgm_volume: float = Field(default=0.15, ge=0, le=1)
     client_reference_id: Optional[str] = Field(default=None, max_length=160)
+    remix_config: Optional[PublicRemixConfig] = None
 
     @model_validator(mode="after")
     def require_prompt_or_script(self):

@@ -55,7 +55,7 @@ vidgen 不是单点的视频模型调用 Demo，而是一套围绕“项目、�
 - 成片完成后可查看抖音 / YouTube 卡片预览，并将视频保存到仓库
 - 支持抖音账号 OAuth 授权；连接账号后，assistant 会自动生成抖音发布草稿，用户确认后再提交发布
 - 支持关系型 Agent 记忆基础设施和 Mem0 语义记忆：普通对话可检索历史偏好，Orchestrator 可把平台与风格偏好作为上下文提示
-- 支持 Qwen Omni、Qwen TTS，以及 WaveSpeed Kling、Volcengine Seedance 等视频生成能力
+- 支持 Qwen Omni、Qwen TTS / Qwen-TTS-Instruct，以及 WaveSpeed Kling、Volcengine Seedance 等视频生成能力
 
 ## 当前支持能力
 
@@ -64,7 +64,7 @@ vidgen 不是单点的视频模型调用 Demo，而是一套围绕“项目、�
 - 输入素材和创作要求后自动生成分镜提示词：
   这是当前主流水线的核心能力，系统会区分“用户创作目标”和“最终旁白脚本”，结合图片内容自动生成 shot 级提示词，避免把“根据这些素材生成方案”这类元指令原样写入口播。
 - 根据旁白脚本自动生成音频：
-  后端已支持根据脚本文本直接生成配音与字幕时间轴；`voiceover_no_audio` 控制是否跳过 VidGen TTS/字幕，`video_model_no_audio` 单独控制 Seedance/Kling 模型原声，自动模式默认关闭模型原声。
+  后端已支持根据脚本文本直接生成配音与字幕时间轴；当 `QWEN_TTS_MODEL` 配置为 `qwen3-tts-instruct-flash` 这类 instruct 模型时，系统会把导演方案中的 `voice_params.tone` 和 `speed` 转成 Qwen TTS `instructions`，用于控制语气、节奏和短视频口播感。音色本体仍由官方 `voice_id` 选择，`voiceover_no_audio` 控制是否跳过 VidGen TTS/字幕，`video_model_no_audio` 单独控制 Seedance/Kling 模型原声，自动模式默认关闭模型原声。
 - 多个短视频自动拼接并适配平台尺寸：
   系统可对多个短视频片段进行重排、裁剪、拼接、字幕合成，并输出抖音、小红书、B 站等目标平台尺寸。
 - 多视频混剪：

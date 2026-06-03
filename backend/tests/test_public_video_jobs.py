@@ -8,11 +8,11 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.db.session import Base, get_db
 from app.models import *  # noqa: F401,F403
+from app.models.api_key import ApiKey
 from app.models.external_video_job import ExternalVideoJob
 from app.models.material import Material
 from app.models.pipeline import PipelineRun
@@ -24,6 +24,8 @@ import app.routers.public_video_jobs as public_jobs_router_module
 
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+MP4_BYTES = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 64
+MP3_BYTES = b"ID3" + b"\x00" * 64
 
 
 class WaitingPromptExecutor:
@@ -210,6 +212,56 @@ async def test_create_public_video_job_uploads_materials_and_requires_review(
     )
     assert retry_response.status_code == 202
     assert retry_response.json()["job_id"] == payload["job_id"]
+
+
+@pytest.mark.asyncio
+async def test_create_public_remix_job_uploads_reference_videos_and_bgm(
+    public_client: AsyncClient,
+    public_api_app,
+):
+    _app, session_factory, raw_key, _key_id, user_id = public_api_app
+    spec = {
+        "prompt": "把这些参考视频混剪成一条节奏感短片",
+        "platform": "douyin",
+        "duration_seconds": 18,
+        "client_reference_id": "remix-order-123",
+        "remix_config": {
+            "target_duration_seconds": 18,
+            "bgm_mood": "cinematic",
+            "bgm_volume": 0.2,
+            "include_source_audio": False,
+            "add_voiceover": True,
+        },
+    }
+    response = await public_client.post(
+        "/v1/video-jobs",
+        files=[
+            ("spec", (None, json.dumps(spec), "application/json")),
+            ("reference_videos", ("video-1.mp4", MP4_BYTES, "video/mp4")),
+            ("reference_videos", ("video-2.mp4", MP4_BYTES, "video/mp4")),
+            ("bgm", ("background.mp3", MP3_BYTES, "audio/mpeg")),
+        ],
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert response.status_code == 202
+
+    async with session_factory() as session:
+        job = await session.get(ExternalVideoJob, response.json()["job_id"])
+        run = await session.get(PipelineRun, job.pipeline_run_id)
+        config = json.loads(run.input_config)
+
+        assert config["image_ids"] == []
+        assert config["reference_video_id"] == config["reference_video_ids"][0]
+        assert len(config["reference_video_ids"]) == 2
+        assert config["remix_config"]["target_duration_seconds"] == 18
+        assert config["remix_config"]["bgm_mood"] == "cinematic"
+        assert config["remix_config"]["bgm_volume"] == 0.2
+        assert config["remix_config"]["include_source_audio"] is False
+        assert config["remix_config"]["add_voiceover"] is True
+
+        bgm_material = await session.get(Material, config["remix_config"]["bgm_material_id"])
+        assert bgm_material.user_id == user_id
+        assert bgm_material.media_type == "audio"
 
 
 @pytest.mark.asyncio

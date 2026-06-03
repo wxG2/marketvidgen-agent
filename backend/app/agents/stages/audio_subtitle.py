@@ -47,9 +47,10 @@ class AudioSubtitleAgent(BaseAgent):
 
         voice_id = voice_params.get("voice_id", "default")
         speed = voice_params.get("speed", 1.0)
+        tone = voice_params.get("tone") or voice_params.get("voice_tone")
 
         # Generate speech audio
-        tts_result = await self.tts.synthesize(text=script, voice_id=voice_id, speed=speed)
+        tts_result = await self.tts.synthesize(text=script, voice_id=voice_id, speed=speed, tone=tone)
         if await context.is_cancelled():
             return AgentResult(success=False, output_data={}, error="Pipeline cancelled")
 

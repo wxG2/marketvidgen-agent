@@ -64,6 +64,37 @@ class _FakeAsyncClient:
         return _FakeStreamResponse(self._lines)
 
 
+class _FakeTTSResponse:
+    def __init__(self, *, status_code: int = 200, json_data: dict | None = None, content: bytes = b""):
+        self.status_code = status_code
+        self._json_data = json_data or {}
+        self.content = content
+        self.text = json.dumps(self._json_data, ensure_ascii=False)
+
+    def json(self) -> dict:
+        return self._json_data
+
+
+class _FakeTTSAsyncClient:
+    """Minimal httpx.AsyncClient stub for Qwen TTS requests."""
+
+    def __init__(self, *args, payload_sink: list[dict] | None = None, **kwargs):
+        self._payload_sink = payload_sink if payload_sink is not None else []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, url: str, *, headers=None, json=None):
+        self._payload_sink.append({"url": url, "headers": headers or {}, "payload": json or {}})
+        return _FakeTTSResponse(json_data={"output": {"audio": {"url": "https://example.com/audio.wav"}}})
+
+    async def get(self, url: str):
+        return _FakeTTSResponse(content=b"fake wav bytes")
+
+
 def json_mod_loads(data) -> dict:
     if isinstance(data, (bytes, bytearray)):
         data = data.decode("utf-8")
@@ -205,6 +236,34 @@ async def test_chat_json_non_omni_model_uses_standard_path(monkeypatch):
     assert len(called_post) == 1
     # No stream key should be injected for the standard path
     assert "stream" not in called_post[0]
+
+
+@pytest.mark.asyncio
+async def test_tts_instruct_model_sends_instructions(monkeypatch, tmp_path):
+    payloads: list[dict] = []
+
+    def _client_factory(*args, **kwargs):
+        return _FakeTTSAsyncClient(*args, payload_sink=payloads, **kwargs)
+
+    monkeypatch.setattr("app.services.llm.qwen_client.httpx.AsyncClient", _client_factory)
+
+    output_path = tmp_path / "tts.wav"
+    client = QwenClient(api_key="k", base_url="https://dashscope.aliyuncs.com/compatible-mode/v1", model="qwen3-tts-instruct-flash")
+    await client.tts(
+        text="这是一段产品介绍。",
+        voice="Cherry",
+        output_path=str(output_path),
+        instructions="请用亲切种草的语气朗读。",
+    )
+
+    sent_input = payloads[0]["payload"]["input"]
+    assert sent_input["text"] == "这是一段产品介绍。"
+    assert sent_input["voice"] == "Cherry"
+    assert sent_input["instructions"] == "请用亲切种草的语气朗读。"
+    # Voice characteristics must stay consistent across all per-segment TTS
+    # calls in a remix job — see qwen_client.tts comment.
+    assert sent_input["optimize_instructions"] is False
+    assert output_path.read_bytes() == b"fake wav bytes"
 
 
 def test_qwen_client_extracts_json_object_from_common_model_formats():

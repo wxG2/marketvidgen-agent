@@ -218,11 +218,18 @@ Authorization: Bearer vg_xxx
   - 必填
   - JSON 字符串
 - `images`
-  - 必填
+  - 普通图文生成必填
   - 1 到 100 张图片
+  - 混剪任务可不传图片
 - `reference_video`
   - 可选
-  - 如果传入，会进入“复刻方案审核”链路
+  - 如果只传入 1 个参考视频，会进入“复刻方案审核”链路
+- `reference_videos`
+  - 可选
+  - 传入 2 到 20 个参考视频时，会进入“混剪方案审核”链路
+- `bgm`
+  - 可选
+  - 混剪任务可上传 BGM 音频文件
 - `watermark`
   - 可选
   - 作为水印素材导入
@@ -254,7 +261,15 @@ Authorization: Bearer vg_xxx
   "transition_duration": 0.5,
   "bgm_mood": "none",
   "bgm_volume": 0.15,
-  "client_reference_id": "customer-order-123"
+  "client_reference_id": "customer-order-123",
+  "remix_config": {
+    "target_duration_seconds": 18,
+    "bgm_mood": "cinematic",
+    "bgm_volume": 0.2,
+    "include_source_audio": false,
+    "add_voiceover": true,
+    "voiceover_script": null
+  }
 }
 ```
 
@@ -276,6 +291,12 @@ Authorization: Bearer vg_xxx
   - `seedance2.0`
   - `kling`
   - `mock`
+- `remix_config` 可选：
+  - 仅混剪任务需要
+  - 当表单里传入 2 个及以上 `reference_videos` 时生效
+  - `target_duration_seconds` 范围：`1-300`
+  - `include_source_audio=false` 表示默认不保留源视频原声
+  - `add_voiceover=true` 表示确认混剪方案后生成旁白 / 字幕
 
 ### 5.3 curl 示例
 
@@ -292,6 +313,31 @@ curl -X POST http://localhost:8000/v1/video-jobs \
   }' \
   -F "images=@./image-1.png" \
   -F "images=@./image-2.png"
+```
+
+### 5.3.1 混剪 curl 示例
+
+```bash
+curl -X POST http://localhost:8000/v1/video-jobs \
+  -H "Authorization: Bearer vg_xxx" \
+  -H "Idempotency-Key: customer-remix-123" \
+  -F 'spec={
+    "prompt":"请基于这些参考视频做一条节奏感强的抖音混剪短片",
+    "platform":"douyin",
+    "duration_seconds":18,
+    "style":"cinematic",
+    "client_reference_id":"customer-remix-123",
+    "remix_config":{
+      "target_duration_seconds":18,
+      "bgm_mood":"cinematic",
+      "bgm_volume":0.2,
+      "include_source_audio":false,
+      "add_voiceover":true
+    }
+  }' \
+  -F "reference_videos=@./video-1.mp4" \
+  -F "reference_videos=@./video-2.mp4" \
+  -F "bgm=@./background.mp3"
 ```
 
 ### 5.4 JavaScript 示例
@@ -485,6 +531,7 @@ curl http://localhost:8000/v1/video-jobs/JOB_ID \
 - `review.type`
   - `shot_plan`
   - `replication_plan`
+  - `remix_plan`
 - `review.required`
 - `review.data`
 
@@ -492,6 +539,7 @@ curl http://localhost:8000/v1/video-jobs/JOB_ID \
 
 - 普通生成通常会停在 `shot_plan`
 - 带参考视频的任务通常会停在 `replication_plan`
+- 带 2 个及以上参考视频的混剪任务通常会停在 `remix_plan`
 - 审核数据已做脱敏，不返回本机文件绝对路径和敏感 token
 
 ## 7. 流式获取进度
@@ -551,6 +599,9 @@ curl -N http://localhost:8000/v1/video-jobs/JOB_ID/events \
   - 也可以在 `edited_shots` 中修改分镜后再批准
 - 当 `review.type=replication_plan` 时：
   - `approved=true` 表示确认方案继续执行
+  - `approved=false` 时，可通过 `adjustments` 提交修改意见
+- 当 `review.type=remix_plan` 时：
+  - `approved=true` 表示确认混剪方案并继续组装成片
   - `approved=false` 时，可通过 `adjustments` 提交修改意见
 
 成功响应示例：
