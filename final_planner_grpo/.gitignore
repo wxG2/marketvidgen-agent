@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+outputs/
+eval/results/*.json
+eval/results_*.md
+wandb/

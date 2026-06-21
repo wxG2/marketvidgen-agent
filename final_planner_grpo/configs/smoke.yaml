@@ -1,0 +1,31 @@
+model_name_or_path: Qwen/Qwen2-0.5B-Instruct
+output_dir: outputs/grpo-smoke
+train_split: train
+eval_split: eval
+max_train_samples: 8
+max_eval_samples: 2
+
+seed: 42
+max_steps: 5
+num_generations: 4
+num_generations_eval: 4
+temperature: 1.0
+learning_rate: 1.0e-6
+beta: 0.005
+reward_weights: [1.0, 0.0, 0.0]
+per_device_train_batch_size: 4
+per_device_eval_batch_size: 4
+gradient_accumulation_steps: 1
+max_prompt_length: 1024
+max_completion_length: 512
+use_vllm: false
+remove_unused_columns: false
+sync_ref_model: false
+log_completions: true
+logging_steps: 1
+eval_strategy: steps
+eval_steps: 5
+save_strategy: "no"
+report_to: "none"
+bf16: false
+gradient_checkpointing: false
