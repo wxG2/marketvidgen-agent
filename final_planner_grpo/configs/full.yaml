@@ -1,0 +1,32 @@
+model_name_or_path: Qwen/Qwen2.5-7B-Instruct
+output_dir: outputs/grpo-full
+train_split: train
+eval_split: eval
+max_eval_samples: 2
+
+seed: 42
+num_train_epochs: 2
+num_generations: 8
+num_generations_eval: 8
+temperature: 0.9
+learning_rate: 1.0e-6
+beta: 0.005
+reward_weights: [1.0, 0.0, 0.0]
+per_device_train_batch_size: 8
+per_device_eval_batch_size: 8
+gradient_accumulation_steps: 4
+max_prompt_length: 2048
+max_completion_length: 1024
+use_vllm: true
+vllm_mode: colocate
+vllm_gpu_memory_utilization: 0.35
+remove_unused_columns: false
+sync_ref_model: false
+log_completions: true
+logging_steps: 10
+eval_strategy: steps
+eval_steps: 50
+save_strategy: epoch
+report_to: wandb
+bf16: true
+gradient_checkpointing: true
